@@ -1538,6 +1538,11 @@ typedef struct TriggerTransition
 	bool		isTable;
 } TriggerTransition;
 
+typedef struct HelloStmt
+{
+	NodeTag type;
+	char *name;
+} HelloStmt;
 /*****************************************************************************
  *		Raw Grammar Output Statements
  *****************************************************************************/

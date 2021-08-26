@@ -1236,6 +1236,14 @@ _equalDeclareCursorStmt(const DeclareCursorStmt *a, const DeclareCursorStmt *b)
 }
 
 static bool
+_equalHelloStmt(const HelloStmt *a, const HelloStmt *b)
+{
+	COMPARE_STRING_FIELD(name);
+
+	return true;
+}
+
+static bool
 _equalClosePortalStmt(const ClosePortalStmt *a, const ClosePortalStmt *b)
 {
 	COMPARE_STRING_FIELD(portalname);
@@ -3396,6 +3404,9 @@ equal(const void *a, const void *b)
 			break;
 		case T_DeclareCursorStmt:
 			retval = _equalDeclareCursorStmt(a, b);
+			break;
+		case T_HelloStmt:
+			retval = _equalHelloStmt(a, b);
 			break;
 		case T_ClosePortalStmt:
 			retval = _equalClosePortalStmt(a, b);

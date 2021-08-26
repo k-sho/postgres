@@ -3451,6 +3451,16 @@ _copyDeclareCursorStmt(const DeclareCursorStmt *from)
 	return newnode;
 }
 
+static HelloStmt *
+_copyHelloStmt(const HelloStmt *from)
+{
+	HelloStmt *newnode = makeNode(HelloStmt);
+
+	COPY_STRING_FIELD(name);
+
+	return newnode;
+}
+
 static ClosePortalStmt *
 _copyClosePortalStmt(const ClosePortalStmt *from)
 {
@@ -5388,6 +5398,9 @@ copyObjectImpl(const void *from)
 			break;
 		case T_DeclareCursorStmt:
 			retval = _copyDeclareCursorStmt(from);
+			break;
+		case T_HelloStmt:
+			retval = _copyHelloStmt(from);
 			break;
 		case T_ClosePortalStmt:
 			retval = _copyClosePortalStmt(from);

@@ -260,6 +260,7 @@ ClassifyUtilityCommandAsReadOnly(Node *parsetree)
 			}
 
 		case T_ClosePortalStmt:
+		case T_HelloStmt:
 		case T_ConstraintsSetStmt:
 		case T_DeallocateStmt:
 		case T_DeclareCursorStmt:
@@ -702,6 +703,12 @@ standard_ProcessUtility(PlannedStmt *pstmt,
 				PerformPortalClose(stmt->portalname);
 			}
 			break;
+
+		case T_HelloStmt:
+			{
+				HelloStmt *stmt = (HelloStmt *) parsetree;
+				break;
+			}
 
 		case T_FetchStmt:
 			PerformPortalFetch((FetchStmt *) parsetree, dest, qc);
@@ -2413,6 +2420,10 @@ CreateCommandTag(Node *parsetree)
 				else
 					tag = CMDTAG_CLOSE_CURSOR;
 			}
+			break;
+
+		case T_HelloStmt:
+			tag = CMDTAG_HELLO;
 			break;
 
 		case T_FetchStmt:

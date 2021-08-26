@@ -330,6 +330,7 @@ typedef enum NodeTag
 	T_GrantRoleStmt,
 	T_AlterDefaultPrivilegesStmt,
 	T_ClosePortalStmt,
+	T_HelloStmt,
 	T_ClusterStmt,
 	T_CopyStmt,
 	T_CreateStmt,

@@ -286,7 +286,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 		DropdbStmt DropTableSpaceStmt
 		DropTransformStmt
 		DropUserMappingStmt ExplainStmt FetchStmt
-		GrantStmt GrantRoleStmt ImportForeignSchemaStmt IndexStmt InsertStmt
+		GrantStmt GrantRoleStmt HelloStmt ImportForeignSchemaStmt IndexStmt InsertStmt
 		ListenStmt LoadStmt LockStmt NotifyStmt ExplainableStmt PreparableStmt
 		CreateFunctionStmt AlterFunctionStmt ReindexStmt RemoveAggrStmt
 		RemoveFuncStmt RemoveOperStmt RenameStmt ReturnStmt RevokeStmt RevokeRoleStmt
@@ -666,7 +666,7 @@ static Node *makeRecursiveViewSelect(char *relname, List *aliases, Node *query);
 
 	GENERATED GLOBAL GRANT GRANTED GREATEST GROUP_P GROUPING GROUPS
 
-	HANDLER HAVING HEADER_P HOLD HOUR_P
+	HANDLER HAVING HEADER_P HELLO HOLD HOUR_P
 
 	IDENTITY_P IF_P ILIKE IMMEDIATE IMMUTABLE IMPLICIT_P IMPORT_P IN_P INCLUDE
 	INCLUDING INCREMENT INDEX INDEXES INHERIT INHERITS INITIALLY INLINE_P
@@ -995,6 +995,7 @@ stmt:
 			| FetchStmt
 			| GrantStmt
 			| GrantRoleStmt
+			| HelloStmt
 			| ImportForeignSchemaStmt
 			| IndexStmt
 			| InsertStmt
@@ -3010,6 +3011,22 @@ alter_type_cmd:
 				}
 		;
 
+
+/*****************************************************************************
+ *
+ *		QUERY :
+ *				hello <name>
+ *
+ *****************************************************************************/
+
+HelloStmt:
+		 HELLO name
+			{
+				HelloStmt *n = makeNode(HelloStmt);
+				n->name = $2;
+				$$ = (Node *)n;
+			}
+		;
 
 /*****************************************************************************
  *
@@ -15581,6 +15598,7 @@ unreserved_keyword:
 			| GROUPS
 			| HANDLER
 			| HEADER_P
+			| HELLO
 			| HOLD
 			| HOUR_P
 			| IDENTITY_P
@@ -16132,6 +16150,7 @@ bare_label_keyword:
 			| GROUPS
 			| HANDLER
 			| HEADER_P
+			| HELLO
 			| HOLD
 			| IDENTITY_P
 			| IF_P
