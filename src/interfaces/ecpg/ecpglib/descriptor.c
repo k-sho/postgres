@@ -12,9 +12,9 @@
 #include "ecpglib.h"
 #include "ecpglib_extern.h"
 #include "ecpgtype.h"
+#include "sql3types.h"
 #include "sqlca.h"
 #include "sqlda.h"
-#include "sql3types.h"
 
 static void descriptor_free(struct descriptor *desc);
 
@@ -591,8 +591,8 @@ set_desc_attr(struct descriptor_item *desc_item, struct variable *var,
 
 	else
 	{
-		struct ECPGgeneric_varchar *variable =
-		(struct ECPGgeneric_varchar *) (var->value);
+		struct ECPGgeneric_bytea *variable =
+		(struct ECPGgeneric_bytea *) (var->value);
 
 		desc_item->is_binary = true;
 		desc_item->data_len = variable->len;

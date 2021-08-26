@@ -4,10 +4,10 @@
  *	  Helper functions for table AMs implementing compressed or
  *    out-of-line storage of varlena attributes.
  *
- * Copyright (c) 2000-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
- *	  src/backend/access/common/toast_helper.c
+ *	  src/backend/access/table/toast_helper.c
  *
  *-------------------------------------------------------------------------
  */
@@ -18,6 +18,8 @@
 #include "access/table.h"
 #include "access/toast_helper.h"
 #include "access/toast_internals.h"
+#include "catalog/pg_type_d.h"
+
 
 /*
  * Prepare to TOAST a tuple.
@@ -52,6 +54,7 @@ toast_tuple_init(ToastTupleContext *ttc)
 
 		ttc->ttc_attr[i].tai_colflags = 0;
 		ttc->ttc_attr[i].tai_oldexternal = NULL;
+		ttc->ttc_attr[i].tai_compression = att->attcompression;
 
 		if (ttc->ttc_oldvalues != NULL)
 		{
@@ -120,7 +123,7 @@ toast_tuple_init(ToastTupleContext *ttc)
 			/*
 			 * If the table's attribute says PLAIN always, force it so.
 			 */
-			if (att->attstorage == 'p')
+			if (att->attstorage == TYPSTORAGE_PLAIN)
 				ttc->ttc_attr[i].tai_colflags |= TOASTCOL_IGNORE;
 
 			/*
@@ -134,7 +137,7 @@ toast_tuple_init(ToastTupleContext *ttc)
 			if (VARATT_IS_EXTERNAL(new_value))
 			{
 				ttc->ttc_attr[i].tai_oldexternal = new_value;
-				if (att->attstorage == 'p')
+				if (att->attstorage == TYPSTORAGE_PLAIN)
 					new_value = detoast_attr(new_value);
 				else
 					new_value = detoast_external_attr(new_value);
@@ -165,8 +168,8 @@ toast_tuple_init(ToastTupleContext *ttc)
  * for_compression flag is passed as true, it must also not be marked
  * TOASTCOL_INCOMPRESSIBLE.
  *
- * The column must have attstorage 'e' or 'x' if check_main is false, and
- * must have attstorage 'm' if check_main is true.
+ * The column must have attstorage EXTERNAL or EXTENDED if check_main is
+ * false, and must have attstorage MAIN if check_main is true.
  *
  * The column must have a minimum size of MAXALIGN(TOAST_POINTER_SIZE);
  * if not, no benefit is to be expected by compressing it.
@@ -195,13 +198,14 @@ toast_tuple_find_biggest_attribute(ToastTupleContext *ttc,
 		if ((ttc->ttc_attr[i].tai_colflags & skip_colflags) != 0)
 			continue;
 		if (VARATT_IS_EXTERNAL(DatumGetPointer(ttc->ttc_values[i])))
-			continue;			/* can't happen, toast_action would be 'p' */
+			continue;			/* can't happen, toast_action would be PLAIN */
 		if (for_compression &&
 			VARATT_IS_COMPRESSED(DatumGetPointer(ttc->ttc_values[i])))
 			continue;
-		if (check_main && att->attstorage != 'm')
+		if (check_main && att->attstorage != TYPSTORAGE_MAIN)
 			continue;
-		if (!check_main && att->attstorage != 'x' && att->attstorage != 'e')
+		if (!check_main && att->attstorage != TYPSTORAGE_EXTENDED &&
+			att->attstorage != TYPSTORAGE_EXTERNAL)
 			continue;
 
 		if (ttc->ttc_attr[i].tai_size > biggest_size)
@@ -223,8 +227,10 @@ void
 toast_tuple_try_compression(ToastTupleContext *ttc, int attribute)
 {
 	Datum	   *value = &ttc->ttc_values[attribute];
-	Datum		new_value = toast_compress_datum(*value);
+	Datum		new_value;
 	ToastAttrInfo *attr = &ttc->ttc_attr[attribute];
+
+	new_value = toast_compress_datum(*value, attr->tai_compression);
 
 	if (DatumGetPointer(new_value) != NULL)
 	{

@@ -4,7 +4,7 @@
  *	  XML data type support.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/utils/adt/xml.c
@@ -221,7 +221,7 @@ const TableFuncRoutine XmlTableRoutine =
 			(errcode(ERRCODE_FEATURE_NOT_SUPPORTED), \
 			 errmsg("unsupported XML feature"), \
 			 errdetail("This functionality requires the server to be built with libxml support."), \
-			 errhint("You need to rebuild PostgreSQL using --with-libxml.")))
+			 errhint("You need to rebuild PostgreSQL using %s.", "--with-libxml")))
 
 
 /* from SQL/XML:2008 section 4.9 */
@@ -959,8 +959,8 @@ pg_xml_init_library(void)
 		if (sizeof(char) != sizeof(xmlChar))
 			ereport(ERROR,
 					(errmsg("could not initialize XML library"),
-					 errdetail("libxml2 has incompatible char type: sizeof(char)=%u, sizeof(xmlChar)=%u.",
-							   (int) sizeof(char), (int) sizeof(xmlChar))));
+					 errdetail("libxml2 has incompatible char type: sizeof(char)=%zu, sizeof(xmlChar)=%zu.",
+							   sizeof(char), sizeof(xmlChar))));
 
 #ifdef USE_LIBXMLCONTEXT
 		/* Set up libxml's memory allocation our way */
@@ -2086,26 +2086,6 @@ map_sql_identifier_to_xml_name(const char *ident, bool fully_escaped,
 
 
 /*
- * Map a Unicode codepoint into the current server encoding.
- */
-static char *
-unicode_to_sqlchar(pg_wchar c)
-{
-	char		utf8string[8];	/* need room for trailing zero */
-	char	   *result;
-
-	memset(utf8string, 0, sizeof(utf8string));
-	unicode_to_utf8(c, (unsigned char *) utf8string);
-
-	result = pg_any_to_server(utf8string, strlen(utf8string), PG_UTF8);
-	/* if pg_any_to_server didn't strdup, we must */
-	if (result == utf8string)
-		result = pstrdup(result);
-	return result;
-}
-
-
-/*
  * Map XML name to SQL identifier; see SQL/XML:2008 section 9.3.
  */
 char *
@@ -2125,10 +2105,12 @@ map_xml_name_to_sql_identifier(const char *name)
 			&& isxdigit((unsigned char) *(p + 5))
 			&& *(p + 6) == '_')
 		{
+			char		cbuf[MAX_UNICODE_EQUIVALENT_STRING + 1];
 			unsigned int u;
 
 			sscanf(p + 2, "%X", &u);
-			appendStringInfoString(&buf, unicode_to_sqlchar(u));
+			pg_unicode_to_server(u, (unsigned char *) cbuf);
+			appendStringInfoString(&buf, cbuf);
 			p += 6;
 		}
 		else
@@ -4036,7 +4018,7 @@ xpath_internal(text *xpath_expr_text, xmltype *data, ArrayType *namespaces,
 
 		Assert(ARR_ELEMTYPE(namespaces) == TEXTOID);
 
-		deconstruct_array(namespaces, TEXTOID, -1, false, 'i',
+		deconstruct_array(namespaces, TEXTOID, -1, false, TYPALIGN_INT,
 						  &ns_names_uris, &ns_names_uris_nulls,
 						  &ns_count);
 
@@ -4552,13 +4534,7 @@ XmlTableFetchRow(TableFuncScanState *state)
 
 	xtCxt = GetXmlTableBuilderPrivateData(state, "XmlTableFetchRow");
 
-	/*
-	 * XmlTable returns table - set of composite values. The error context, is
-	 * used for producement more values, between two calls, there can be
-	 * created and used another libxml2 error context. It is libxml2 global
-	 * value, so it should be refreshed any time before any libxml2 usage,
-	 * that is finished by returning some value.
-	 */
+	/* Propagate our own error context to libxml2 */
 	xmlSetStructuredErrorFunc((void *) xtCxt->xmlerrcxt, xml_errorHandler);
 
 	if (xtCxt->xpathobj == NULL)
@@ -4612,7 +4588,7 @@ XmlTableGetValue(TableFuncScanState *state, int colnum,
 		   xtCxt->xpathobj->type == XPATH_NODESET &&
 		   xtCxt->xpathobj->nodesetval != NULL);
 
-	/* Propagate context related error context to libxml2 */
+	/* Propagate our own error context to libxml2 */
 	xmlSetStructuredErrorFunc((void *) xtCxt->xmlerrcxt, xml_errorHandler);
 
 	*isnull = false;
@@ -4755,7 +4731,7 @@ XmlTableDestroyOpaque(TableFuncScanState *state)
 
 	xtCxt = GetXmlTableBuilderPrivateData(state, "XmlTableDestroyOpaque");
 
-	/* Propagate context related error context to libxml2 */
+	/* Propagate our own error context to libxml2 */
 	xmlSetStructuredErrorFunc((void *) xtCxt->xmlerrcxt, xml_errorHandler);
 
 	if (xtCxt->xpathscomp != NULL)

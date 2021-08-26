@@ -1,10 +1,13 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 use strict;
 use warnings;
 
 use Config;
 use PostgresNode;
 use TestLib;
-use Test::More tests => 74;
+use Test::More tests => 82;
 
 my $tempdir       = TestLib::tempdir;
 my $tempdir_short = TestLib::tempdir_short;
@@ -50,6 +53,18 @@ command_fails_like(
 );
 
 command_fails_like(
+	[ 'pg_dump', '-s', '--include-foreign-data=xxx' ],
+	qr/\Qpg_dump: error: options -s\/--schema-only and --include-foreign-data cannot be used together\E/,
+	'pg_dump: options -s/--schema-only and --include-foreign-data cannot be used together'
+);
+
+command_fails_like(
+	[ 'pg_dump', '-j2', '--include-foreign-data=xxx' ],
+	qr/\Qpg_dump: error: option --include-foreign-data is not supported with parallel backup\E/,
+	'pg_dump: option --include-foreign-data is not supported with parallel backup'
+);
+
+command_fails_like(
 	['pg_restore'],
 	qr{\Qpg_restore: error: one of -d/--dbname and -f/--file must be specified\E},
 	'pg_restore: error: one of -d/--dbname and -f/--file must be specified');
@@ -86,10 +101,11 @@ command_fails_like(
 	qr/\Qpg_dump: error: parallel backup only supported by the directory format\E/,
 	'pg_dump: parallel backup only supported by the directory format');
 
+# Note the trailing whitespace for the value of --jobs, that is valid.
 command_fails_like(
-	[ 'pg_dump', '-j', '-1' ],
-	qr/\Qpg_dump: error: invalid number of parallel jobs\E/,
-	'pg_dump: invalid number of parallel jobs');
+	[ 'pg_dump', '-j', '-1 ' ],
+	qr/\Qpg_dump: error: -j\/--jobs must be in range\E/,
+	'pg_dump: -j/--jobs must be in range');
 
 command_fails_like(
 	[ 'pg_dump', '-F', 'garbage' ],
@@ -98,8 +114,8 @@ command_fails_like(
 
 command_fails_like(
 	[ 'pg_restore', '-j', '-1', '-f -' ],
-	qr/\Qpg_restore: error: invalid number of parallel jobs\E/,
-	'pg_restore: invalid number of parallel jobs');
+	qr/\Qpg_restore: error: -j\/--jobs must be in range\E/,
+	'pg_restore: -j/--jobs must be in range');
 
 command_fails_like(
 	[ 'pg_restore', '--single-transaction', '-j3', '-f -' ],
@@ -108,8 +124,18 @@ command_fails_like(
 
 command_fails_like(
 	[ 'pg_dump', '-Z', '-1' ],
-	qr/\Qpg_dump: error: compression level must be in range 0..9\E/,
-	'pg_dump: compression level must be in range 0..9');
+	qr/\Qpg_dump: error: -Z\/--compress must be in range 0..9\E/,
+	'pg_dump: -Z/--compress must be in range');
+
+command_fails_like(
+	[ 'pg_dump', '--extra-float-digits', '-16' ],
+	qr/\Qpg_dump: error: --extra-float-digits must be in range\E/,
+	'pg_dump: --extra-float-digits must be in range');
+
+command_fails_like(
+	[ 'pg_dump', '--rows-per-insert', '0' ],
+	qr/\Qpg_dump: error: --rows-per-insert must be in range\E/,
+	'pg_dump: --rows-per-insert must be in range');
 
 command_fails_like(
 	[ 'pg_restore', '--if-exists', '-f -' ],

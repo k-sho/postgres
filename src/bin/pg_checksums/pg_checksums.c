@@ -4,7 +4,7 @@
  *	  Checks, enables or disables page level checksums for an offline
  *	  cluster
  *
- * Copyright (c) 2010-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/bin/pg_checksums/pg_checksums.c
@@ -15,6 +15,7 @@
 #include "postgres_fe.h"
 
 #include <dirent.h>
+#include <limits.h>
 #include <time.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -24,6 +25,7 @@
 #include "common/file_perm.h"
 #include "common/file_utils.h"
 #include "common/logging.h"
+#include "fe_utils/option_utils.h"
 #include "getopt_long.h"
 #include "pg_getopt.h"
 #include "storage/bufpage.h"
@@ -31,8 +33,10 @@
 #include "storage/checksum_impl.h"
 
 
-static int64 files = 0;
-static int64 blocks = 0;
+static int64 files_scanned = 0;
+static int64 files_written = 0;
+static int64 blocks_scanned = 0;
+static int64 blocks_written = 0;
 static int64 badblocks = 0;
 static ControlFileData *ControlFile;
 
@@ -88,24 +92,36 @@ usage(void)
 	printf(_("  -?, --help               show this help, then exit\n"));
 	printf(_("\nIf no data directory (DATADIR) is specified, "
 			 "the environment variable PGDATA\nis used.\n\n"));
-	printf(_("Report bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("Report bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }
+
+/*
+ * Definition of one element part of an exclusion list, used for files
+ * to exclude from checksum validation.  "name" is the name of the file
+ * or path to check for exclusion.  If "match_prefix" is true, any items
+ * matching the name as prefix are excluded.
+ */
+struct exclude_list_item
+{
+	const char *name;
+	bool		match_prefix;
+};
 
 /*
  * List of files excluded from checksum validation.
  *
  * Note: this list should be kept in sync with what basebackup.c includes.
  */
-static const char *const skip[] = {
-	"pg_control",
-	"pg_filenode.map",
-	"pg_internal.init",
-	"PG_VERSION",
+static const struct exclude_list_item skip[] = {
+	{"pg_control", false},
+	{"pg_filenode.map", false},
+	{"pg_internal.init", true},
+	{"PG_VERSION", false},
 #ifdef EXEC_BACKEND
-	"config_exec_params",
-	"config_exec_params.new",
+	{"config_exec_params", true},
 #endif
-	NULL,
+	{NULL, false}
 };
 
 /*
@@ -113,7 +129,7 @@ static const char *const skip[] = {
  * src/bin/pg_basebackup/pg_basebackup.c.
  */
 static void
-progress_report(bool force)
+progress_report(bool finished)
 {
 	int			percent;
 	char		total_size_str[32];
@@ -123,7 +139,7 @@ progress_report(bool force)
 	Assert(showprogress);
 
 	now = time(NULL);
-	if (now == last_progress_report && !force)
+	if (now == last_progress_report && !finished)
 		return;					/* Max once per second */
 
 	/* Save current time */
@@ -150,18 +166,27 @@ progress_report(bool force)
 			(int) strlen(current_size_str), current_size_str, total_size_str,
 			percent);
 
-	/* Stay on the same line if reporting to a terminal */
-	fprintf(stderr, isatty(fileno(stderr)) ? "\r" : "\n");
+	/*
+	 * Stay on the same line if reporting to a terminal and we're not done
+	 * yet.
+	 */
+	fputc((!finished && isatty(fileno(stderr))) ? '\r' : '\n', stderr);
 }
 
 static bool
 skipfile(const char *fn)
 {
-	const char *const *f;
+	int			excludeIdx;
 
-	for (f = skip; *f; f++)
-		if (strcmp(*f, fn) == 0)
+	for (excludeIdx = 0; skip[excludeIdx].name != NULL; excludeIdx++)
+	{
+		int			cmplen = strlen(skip[excludeIdx].name);
+
+		if (!skip[excludeIdx].match_prefix)
+			cmplen++;
+		if (strncmp(skip[excludeIdx].name, fn, cmplen) == 0)
 			return true;
+	}
 
 	return false;
 }
@@ -174,6 +199,7 @@ scan_file(const char *fn, BlockNumber segmentno)
 	int			f;
 	BlockNumber blockno;
 	int			flags;
+	int64		blocks_written_in_file = 0;
 
 	Assert(mode == PG_MODE_ENABLE ||
 		   mode == PG_MODE_CHECK);
@@ -187,7 +213,7 @@ scan_file(const char *fn, BlockNumber segmentno)
 		exit(1);
 	}
 
-	files++;
+	files_scanned++;
 
 	for (blockno = 0;; blockno++)
 	{
@@ -206,14 +232,21 @@ scan_file(const char *fn, BlockNumber segmentno)
 							 blockno, fn, r, BLCKSZ);
 			exit(1);
 		}
-		blocks++;
+		blocks_scanned++;
+
+		/*
+		 * Since the file size is counted as total_size for progress status
+		 * information, the sizes of all pages including new ones in the file
+		 * should be counted as current_size. Otherwise the progress reporting
+		 * calculated using those counters may not reach 100%.
+		 */
+		current_size += r;
 
 		/* New pages have no checksum yet */
 		if (PageIsNew(header))
 			continue;
 
 		csum = pg_checksum_page(buf.data, blockno + segmentno * RELSEG_SIZE);
-		current_size += r;
 		if (mode == PG_MODE_CHECK)
 		{
 			if (csum != header->pd_checksum)
@@ -226,7 +259,16 @@ scan_file(const char *fn, BlockNumber segmentno)
 		}
 		else if (mode == PG_MODE_ENABLE)
 		{
-			int		w;
+			int			w;
+
+			/*
+			 * Do not rewrite if the checksum is already set to the expected
+			 * value.
+			 */
+			if (header->pd_checksum == csum)
+				continue;
+
+			blocks_written_in_file++;
 
 			/* Set checksum in page header */
 			header->pd_checksum = csum;
@@ -262,6 +304,13 @@ scan_file(const char *fn, BlockNumber segmentno)
 			pg_log_info("checksums verified in file \"%s\"", fn);
 		if (mode == PG_MODE_ENABLE)
 			pg_log_info("checksums enabled in file \"%s\"", fn);
+	}
+
+	/* Update write counters if any write activity has happened */
+	if (blocks_written_in_file > 0)
+	{
+		files_written++;
+		blocks_written += blocks_written_in_file;
 	}
 
 	close(f);
@@ -368,7 +417,52 @@ scan_directory(const char *basedir, const char *subdir, bool sizeonly)
 #else
 		else if (S_ISDIR(st.st_mode) || pgwin32_is_junction(fn))
 #endif
-			dirsize += scan_directory(path, de->d_name, sizeonly);
+		{
+			/*
+			 * If going through the entries of pg_tblspc, we assume to operate
+			 * on tablespace locations where only TABLESPACE_VERSION_DIRECTORY
+			 * is valid, resolving the linked locations and dive into them
+			 * directly.
+			 */
+			if (strncmp("pg_tblspc", subdir, strlen("pg_tblspc")) == 0)
+			{
+				char		tblspc_path[MAXPGPATH];
+				struct stat tblspc_st;
+
+				/*
+				 * Resolve tablespace location path and check whether
+				 * TABLESPACE_VERSION_DIRECTORY exists.  Not finding a valid
+				 * location is unexpected, since there should be no orphaned
+				 * links and no links pointing to something else than a
+				 * directory.
+				 */
+				snprintf(tblspc_path, sizeof(tblspc_path), "%s/%s/%s",
+						 path, de->d_name, TABLESPACE_VERSION_DIRECTORY);
+
+				if (lstat(tblspc_path, &tblspc_st) < 0)
+				{
+					pg_log_error("could not stat file \"%s\": %m",
+								 tblspc_path);
+					exit(1);
+				}
+
+				/*
+				 * Move backwards once as the scan needs to happen for the
+				 * contents of TABLESPACE_VERSION_DIRECTORY.
+				 */
+				snprintf(tblspc_path, sizeof(tblspc_path), "%s/%s",
+						 path, de->d_name);
+
+				/* Looks like a valid tablespace location */
+				dirsize += scan_directory(tblspc_path,
+										  TABLESPACE_VERSION_DIRECTORY,
+										  sizeonly);
+			}
+			else
+			{
+				dirsize += scan_directory(path, de->d_name, sizeonly);
+			}
+		}
 	}
 	closedir(dir);
 	return dirsize;
@@ -426,11 +520,10 @@ main(int argc, char *argv[])
 				mode = PG_MODE_ENABLE;
 				break;
 			case 'f':
-				if (atoi(optarg) == 0)
-				{
-					pg_log_error("invalid filenode specification, must be numeric: %s", optarg);
+				if (!option_parse_int(optarg, "-f/--filenode", 0,
+									  INT_MAX,
+									  NULL))
 					exit(1);
-				}
 				only_filenode = pstrdup(optarg);
 				break;
 			case 'N':
@@ -561,21 +654,23 @@ main(int argc, char *argv[])
 		(void) scan_directory(DataDir, "pg_tblspc", false);
 
 		if (showprogress)
-		{
 			progress_report(true);
-			fprintf(stderr, "\n");	/* Need to move to next line */
-		}
 
 		printf(_("Checksum operation completed\n"));
-		printf(_("Files scanned:  %s\n"), psprintf(INT64_FORMAT, files));
-		printf(_("Blocks scanned: %s\n"), psprintf(INT64_FORMAT, blocks));
+		printf(_("Files scanned:   %s\n"), psprintf(INT64_FORMAT, files_scanned));
+		printf(_("Blocks scanned:  %s\n"), psprintf(INT64_FORMAT, blocks_scanned));
 		if (mode == PG_MODE_CHECK)
 		{
 			printf(_("Bad checksums:  %s\n"), psprintf(INT64_FORMAT, badblocks));
-			printf(_("Data checksum version: %d\n"), ControlFile->data_checksum_version);
+			printf(_("Data checksum version: %u\n"), ControlFile->data_checksum_version);
 
 			if (badblocks > 0)
 				exit(1);
+		}
+		else if (mode == PG_MODE_ENABLE)
+		{
+			printf(_("Files written:  %s\n"), psprintf(INT64_FORMAT, files_written));
+			printf(_("Blocks written: %s\n"), psprintf(INT64_FORMAT, blocks_written));
 		}
 	}
 
@@ -599,7 +694,7 @@ main(int argc, char *argv[])
 		update_controlfile(DataDir, ControlFile, do_sync);
 
 		if (verbose)
-			printf(_("Data checksum version: %d\n"), ControlFile->data_checksum_version);
+			printf(_("Data checksum version: %u\n"), ControlFile->data_checksum_version);
 		if (mode == PG_MODE_ENABLE)
 			printf(_("Checksums enabled in cluster\n"));
 		else

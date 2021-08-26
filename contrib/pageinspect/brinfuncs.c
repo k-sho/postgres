@@ -2,7 +2,7 @@
  * brinfuncs.c
  *		Functions to investigate BRIN indexes
  *
- * Copyright (c) 2014-2019, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		contrib/pageinspect/brinfuncs.c
@@ -52,7 +52,7 @@ brin_page_type(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to use raw page functions"))));
+				 errmsg("must be superuser to use raw page functions")));
 
 	raw_page_size = VARSIZE(raw_page) - VARHDRSZ;
 
@@ -141,7 +141,7 @@ brin_page_items(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to use raw page functions"))));
+				 errmsg("must be superuser to use raw page functions")));
 
 	/* check to see if caller supports us returning a tuplestore */
 	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
@@ -252,7 +252,18 @@ brin_page_items(PG_FUNCTION_ARGS)
 			int			att = attno - 1;
 
 			values[0] = UInt16GetDatum(offset);
-			values[1] = UInt32GetDatum(dtup->bt_blkno);
+			switch (TupleDescAttr(tupdesc, 1)->atttypid)
+			{
+				case INT8OID:
+					values[1] = Int64GetDatum((int64) dtup->bt_blkno);
+					break;
+				case INT4OID:
+					/* support for old extension version */
+					values[1] = UInt32GetDatum(dtup->bt_blkno);
+					break;
+				default:
+					elog(ERROR, "incorrect output types");
+			}
 			values[2] = UInt16GetDatum(attno);
 			values[3] = BoolGetDatum(dtup->bt_columns[att].bv_allnulls);
 			values[4] = BoolGetDatum(dtup->bt_columns[att].bv_hasnulls);
@@ -336,7 +347,7 @@ brin_metapage_info(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to use raw page functions"))));
+				 errmsg("must be superuser to use raw page functions")));
 
 	page = verify_brin_page(raw_page, BRIN_PAGETYPE_META, "metapage");
 
@@ -374,7 +385,7 @@ brin_revmap_data(PG_FUNCTION_ARGS)
 	if (!superuser())
 		ereport(ERROR,
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-				 (errmsg("must be superuser to use raw page functions"))));
+				 errmsg("must be superuser to use raw page functions")));
 
 	if (SRF_IS_FIRSTCALL())
 	{

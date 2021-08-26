@@ -2,7 +2,7 @@
  *
  * streamutil.h
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/streamutil.h
@@ -12,10 +12,9 @@
 #ifndef STREAMUTIL_H
 #define STREAMUTIL_H
 
-#include "libpq-fe.h"
-
 #include "access/xlogdefs.h"
 #include "datatype/timestamp.h"
+#include "libpq-fe.h"
 
 extern const char *progname;
 extern char *connection_string;
@@ -35,7 +34,7 @@ extern PGconn *GetConnection(void);
 extern bool CreateReplicationSlot(PGconn *conn, const char *slot_name,
 								  const char *plugin, bool is_temporary,
 								  bool is_physical, bool reserve_wal,
-								  bool slot_exists_ok);
+								  bool slot_exists_ok, bool two_phase);
 extern bool DropReplicationSlot(PGconn *conn, const char *slot_name);
 extern bool RunIdentifySystem(PGconn *conn, char **sysid,
 							  TimeLineID *starttli,

@@ -3,9 +3,8 @@
 #ifndef _ECPG_PREPROC_EXTERN_H
 #define _ECPG_PREPROC_EXTERN_H
 
-#include "type.h"
-
 #include "common/keywords.h"
+#include "type.h"
 
 #ifndef CHAR_BIT
 #include <limits.h>
@@ -48,6 +47,7 @@ extern struct _include_path *include_paths;
 extern struct cursor *cur;
 extern struct typedefs *types;
 extern struct _defines *defines;
+extern struct declared_list *g_declared_list;
 extern struct ECPGtype ecpg_no_indicator;
 extern struct variable no_indicator;
 extern struct arguments *argsinsert;

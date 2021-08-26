@@ -1,3 +1,6 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 # Test for checking consistency of on-disk pages for a cluster with
 # the minimum recovery LSN, ensuring that the updates happen across
 # all processes.  In this test, the updates from the startup process
@@ -40,7 +43,7 @@ sub find_largest_lsn
 }
 
 # Initialize primary node
-my $primary = get_new_node('primary');
+my $primary = PostgresNode->new('primary');
 $primary->init(allows_streaming => 1);
 
 # Set shared_buffers to a very low value to enforce discard and flush
@@ -58,7 +61,7 @@ $primary->start;
 
 # setup/start a standby
 $primary->backup('bkp');
-my $standby = get_new_node('standby');
+my $standby = PostgresNode->new('standby');
 $standby->init_from_backup($primary, 'bkp', has_streaming => 1);
 $standby->start;
 

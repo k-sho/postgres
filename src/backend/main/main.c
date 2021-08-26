@@ -9,7 +9,7 @@
  * proper FooMain() routine for the incarnation.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -35,7 +35,6 @@
 #include "common/username.h"
 #include "port/atomics.h"
 #include "postmaster/postmaster.h"
-#include "storage/s_lock.h"
 #include "storage/spin.h"
 #include "tcop/tcopprot.h"
 #include "utils/help_config.h"
@@ -182,33 +181,24 @@ main(int argc, char *argv[])
 	 * Dispatch to one of various subprograms depending on first argument.
 	 */
 
+	if (argc > 1 && strcmp(argv[1], "--check") == 0)
+		BootstrapModeMain(argc, argv, true);
+	else if (argc > 1 && strcmp(argv[1], "--boot") == 0)
+		BootstrapModeMain(argc, argv, false);
 #ifdef EXEC_BACKEND
-	if (argc > 1 && strncmp(argv[1], "--fork", 6) == 0)
-		SubPostmasterMain(argc, argv);	/* does not return */
+	else if (argc > 1 && strncmp(argv[1], "--fork", 6) == 0)
+		SubPostmasterMain(argc, argv);
 #endif
-
-#ifdef WIN32
-
-	/*
-	 * Start our win32 signal implementation
-	 *
-	 * SubPostmasterMain() will do this for itself, but the remaining modes
-	 * need it here
-	 */
-	pgwin32_signal_initialize();
-#endif
-
-	if (argc > 1 && strcmp(argv[1], "--boot") == 0)
-		AuxiliaryProcessMain(argc, argv);	/* does not return */
 	else if (argc > 1 && strcmp(argv[1], "--describe-config") == 0)
-		GucInfoMain();			/* does not return */
+		GucInfoMain();
 	else if (argc > 1 && strcmp(argv[1], "--single") == 0)
 		PostgresMain(argc, argv,
 					 NULL,		/* no dbname */
-					 strdup(get_user_name_or_exit(progname)));	/* does not return */
+					 strdup(get_user_name_or_exit(progname)));
 	else
-		PostmasterMain(argc, argv); /* does not return */
-	abort();					/* should not get here */
+		PostmasterMain(argc, argv);
+	/* the functions above should not return */
+	abort();
 }
 
 
@@ -324,7 +314,6 @@ help(const char *progname)
 	printf(_("  -l                 enable SSL connections\n"));
 #endif
 	printf(_("  -N MAX-CONNECT     maximum number of allowed connections\n"));
-	printf(_("  -o OPTIONS         pass \"OPTIONS\" to each server process (obsolete)\n"));
 	printf(_("  -p PORT            port number to listen on\n"));
 	printf(_("  -s                 show statistics after each query\n"));
 	printf(_("  -S WORK-MEM        set amount of memory for sorts (in kB)\n"));
@@ -352,14 +341,15 @@ help(const char *progname)
 
 	printf(_("\nOptions for bootstrapping mode:\n"));
 	printf(_("  --boot             selects bootstrapping mode (must be first argument)\n"));
+	printf(_("  --check            selects check mode (must be first argument)\n"));
 	printf(_("  DBNAME             database name (mandatory argument in bootstrapping mode)\n"));
 	printf(_("  -r FILENAME        send stdout and stderr to given file\n"));
-	printf(_("  -x NUM             internal use\n"));
 
 	printf(_("\nPlease read the documentation for the complete list of run-time\n"
 			 "configuration settings and how to set them on the command line or in\n"
 			 "the configuration file.\n\n"
-			 "Report bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+			 "Report bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }
 
 

@@ -40,7 +40,7 @@
  * doesn't really save much executor work anyway.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -83,15 +83,14 @@ assign_param_for_var(PlannerInfo *root, Var *var)
 
 			/*
 			 * This comparison must match _equalVar(), except for ignoring
-			 * varlevelsup.  Note that _equalVar() ignores the location.
+			 * varlevelsup.  Note that _equalVar() ignores varnosyn,
+			 * varattnosyn, and location, so this does too.
 			 */
 			if (pvar->varno == var->varno &&
 				pvar->varattno == var->varattno &&
 				pvar->vartype == var->vartype &&
 				pvar->vartypmod == var->vartypmod &&
-				pvar->varcollid == var->varcollid &&
-				pvar->varnoold == var->varnoold &&
-				pvar->varoattno == var->varoattno)
+				pvar->varcollid == var->varcollid)
 				return pitem->paramId;
 		}
 	}
@@ -432,7 +431,7 @@ process_subquery_nestloop_params(PlannerInfo *root, List *subplan_params)
 
 	foreach(lc, subplan_params)
 	{
-		PlannerParamItem *pitem = castNode(PlannerParamItem, lfirst(lc));
+		PlannerParamItem *pitem = lfirst_node(PlannerParamItem, lc);
 
 		if (IsA(pitem->item, Var))
 		{

@@ -1,3 +1,6 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 # Test behavior with different schema on subscriber
 use strict;
 use warnings;
@@ -6,12 +9,12 @@ use TestLib;
 use Test::More tests => 5;
 
 # Create publisher node
-my $node_publisher = get_new_node('publisher');
+my $node_publisher = PostgresNode->new('publisher');
 $node_publisher->init(allows_streaming => 'logical');
 $node_publisher->start;
 
 # Create subscriber node
-my $node_subscriber = get_new_node('subscriber');
+my $node_subscriber = PostgresNode->new('subscriber');
 $node_subscriber->init(allows_streaming => 'logical');
 $node_subscriber->start;
 
@@ -95,11 +98,9 @@ is($result, qq(3|3|3|3),
 # progressing.
 # (https://www.postgresql.org/message-id/flat/a9139c29-7ddd-973b-aa7f-71fed9c38d75%40minerva.info)
 
-$node_publisher->safe_psql('postgres',
-	"CREATE TABLE test_tab2 (a int)");
+$node_publisher->safe_psql('postgres', "CREATE TABLE test_tab2 (a int)");
 
-$node_subscriber->safe_psql('postgres',
-	"CREATE TABLE test_tab2 (a int)");
+$node_subscriber->safe_psql('postgres', "CREATE TABLE test_tab2 (a int)");
 
 $node_subscriber->safe_psql('postgres',
 	"ALTER SUBSCRIPTION tap_sub REFRESH PUBLICATION");
@@ -113,15 +114,14 @@ $node_subscriber->poll_query_until('postgres', $synced_query)
 $node_subscriber->safe_psql('postgres',
 	"ALTER TABLE test_tab2 ADD COLUMN b serial PRIMARY KEY");
 
-$node_publisher->safe_psql('postgres',
-	"INSERT INTO test_tab2 VALUES (1)");
+$node_publisher->safe_psql('postgres', "INSERT INTO test_tab2 VALUES (1)");
 
 $node_publisher->wait_for_catchup('tap_sub');
 
-is($node_subscriber->safe_psql('postgres',
-							   "SELECT count(*), min(a), max(a) FROM test_tab2"),
-   qq(1|1|1),
-   'check replicated inserts on subscriber');
+is( $node_subscriber->safe_psql(
+		'postgres', "SELECT count(*), min(a), max(a) FROM test_tab2"),
+	qq(1|1|1),
+	'check replicated inserts on subscriber');
 
 
 $node_subscriber->stop;

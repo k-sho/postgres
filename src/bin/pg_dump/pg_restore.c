@@ -46,6 +46,7 @@
 #endif
 
 #include "dumputils.h"
+#include "fe_utils/option_utils.h"
 #include "getopt_long.h"
 #include "parallel.h"
 #include "pg_backup_utils.h"
@@ -163,7 +164,7 @@ main(int argc, char **argv)
 				opts->createDB = 1;
 				break;
 			case 'd':
-				opts->dbname = pg_strdup(optarg);
+				opts->cparams.dbname = pg_strdup(optarg);
 				break;
 			case 'e':
 				opts->exit_on_error = true;
@@ -177,11 +178,14 @@ main(int argc, char **argv)
 				break;
 			case 'h':
 				if (strlen(optarg) != 0)
-					opts->pghost = pg_strdup(optarg);
+					opts->cparams.pghost = pg_strdup(optarg);
 				break;
 
 			case 'j':			/* number of restore jobs */
-				numWorkers = atoi(optarg);
+				if (!option_parse_int(optarg, "-j/--jobs", 1,
+									  PG_MAX_JOBS,
+									  &numWorkers))
+					exit(1);
 				break;
 
 			case 'l':			/* Dump the TOC summary */
@@ -206,7 +210,7 @@ main(int argc, char **argv)
 
 			case 'p':
 				if (strlen(optarg) != 0)
-					opts->pgport = pg_strdup(optarg);
+					opts->cparams.pgport = pg_strdup(optarg);
 				break;
 			case 'R':
 				/* no-op, still accepted for backwards compatibility */
@@ -240,20 +244,20 @@ main(int argc, char **argv)
 				break;
 
 			case 'U':
-				opts->username = pg_strdup(optarg);
+				opts->cparams.username = pg_strdup(optarg);
 				break;
 
 			case 'v':			/* verbose */
 				opts->verbose = 1;
-				pg_logging_set_level(PG_LOG_INFO);
+				pg_logging_increase_verbosity();
 				break;
 
 			case 'w':
-				opts->promptPassword = TRI_NO;
+				opts->cparams.promptPassword = TRI_NO;
 				break;
 
 			case 'W':
-				opts->promptPassword = TRI_YES;
+				opts->cparams.promptPassword = TRI_YES;
 				break;
 
 			case 'x':			/* skip ACL dump */
@@ -303,14 +307,14 @@ main(int argc, char **argv)
 	}
 
 	/* Complain if neither -f nor -d was specified (except if dumping TOC) */
-	if (!opts->dbname && !opts->filename && !opts->tocSummary)
+	if (!opts->cparams.dbname && !opts->filename && !opts->tocSummary)
 	{
 		pg_log_error("one of -d/--dbname and -f/--file must be specified");
 		exit_nicely(1);
 	}
 
 	/* Should get at most one of -d and -f, else user is confused */
-	if (opts->dbname)
+	if (opts->cparams.dbname)
 	{
 		if (opts->filename)
 		{
@@ -343,22 +347,6 @@ main(int argc, char **argv)
 		pg_log_error("options -C/--create and -1/--single-transaction cannot be used together");
 		exit_nicely(1);
 	}
-
-	if (numWorkers <= 0)
-	{
-		pg_log_error("invalid number of parallel jobs");
-		exit(1);
-	}
-
-	/* See comments in pg_dump.c */
-#ifdef WIN32
-	if (numWorkers > MAXIMUM_WAIT_OBJECTS)
-	{
-		pg_log_error("maximum number of parallel jobs is %d",
-					 MAXIMUM_WAIT_OBJECTS);
-		exit(1);
-	}
-#endif
 
 	/* Can't do single-txn mode with multiple connections */
 	if (opts->single_txn && numWorkers > 1)
@@ -519,5 +507,6 @@ usage(const char *progname)
 			 "The options -I, -n, -N, -P, -t, -T, and --section can be combined and specified\n"
 			 "multiple times to select multiple objects.\n"));
 	printf(_("\nIf no input file name is supplied, then standard input is used.\n\n"));
-	printf(_("Report bugs to <pgsql-bugs@lists.postgresql.org>.\n"));
+	printf(_("Report bugs to <%s>.\n"), PACKAGE_BUGREPORT);
+	printf(_("%s home page: <%s>\n"), PACKAGE_NAME, PACKAGE_URL);
 }

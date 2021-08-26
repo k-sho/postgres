@@ -28,8 +28,6 @@ CREATE OPERATOR CLASS box_ops DEFAULT
 	OPERATOR 10	<<|,
 	OPERATOR 11	|>>,
 	OPERATOR 12	|&>,
-	OPERATOR 13	~,
-	OPERATOR 14	@,
 	FUNCTION 1	gist_box_consistent(internal, box, smallint, oid, internal),
 	FUNCTION 2	gist_box_union(internal, internal),
 	-- don't need compress, decompress, or fetch functions
@@ -50,10 +48,10 @@ SET enable_bitmapscan = OFF;
 
 EXPLAIN (COSTS OFF)
 SELECT * FROM fast_emp4000
-    WHERE home_base @ '(200,200),(2000,1000)'::box
+    WHERE home_base <@ '(200,200),(2000,1000)'::box
     ORDER BY (home_base[0])[0];
 SELECT * FROM fast_emp4000
-    WHERE home_base @ '(200,200),(2000,1000)'::box
+    WHERE home_base <@ '(200,200),(2000,1000)'::box
     ORDER BY (home_base[0])[0];
 
 EXPLAIN (COSTS OFF)
@@ -70,7 +68,12 @@ ROLLBACK;
 DROP ACCESS METHOD gist2;
 
 -- Drop access method cascade
+-- To prevent a (rare) deadlock against autovacuum,
+-- we must lock the table that owns the index that will be dropped
+BEGIN;
+LOCK TABLE fast_emp4000;
 DROP ACCESS METHOD gist2 CASCADE;
+COMMIT;
 
 
 --
@@ -158,6 +161,23 @@ WHERE pg_depend.refclassid = 'pg_am'::regclass
     AND pg_am.amname = 'heap2'
 ORDER BY classid, objid, objsubid;
 
+-- ALTER TABLE SET ACCESS METHOD
+CREATE TABLE heaptable USING heap AS
+  SELECT a, repeat(a::text, 100) FROM generate_series(1,9) AS a;
+SELECT amname FROM pg_class c, pg_am am
+  WHERE c.relam = am.oid AND c.oid = 'heaptable'::regclass;
+ALTER TABLE heaptable SET ACCESS METHOD heap2;
+SELECT amname FROM pg_class c, pg_am am
+  WHERE c.relam = am.oid AND c.oid = 'heaptable'::regclass;
+SELECT COUNT(a), COUNT(1) FILTER(WHERE a=1) FROM heaptable;
+-- No support for multiple subcommands
+ALTER TABLE heaptable SET ACCESS METHOD heap, SET ACCESS METHOD heap2;
+DROP TABLE heaptable;
+-- No support for partitioned tables.
+CREATE TABLE am_partitioned(x INT, y INT)
+  PARTITION BY hash (x);
+ALTER TABLE am_partitioned SET ACCESS METHOD heap2;
+DROP TABLE am_partitioned;
 
 -- Second, create objects in the new AM by changing the default AM
 BEGIN;

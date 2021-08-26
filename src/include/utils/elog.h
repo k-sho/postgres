@@ -4,7 +4,7 @@
  *	  POSTGRES error reporting/logging definitions.
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/elog.h
@@ -40,19 +40,21 @@
 #define WARNING		19			/* Warnings.  NOTICE is for expected messages
 								 * like implicit sequence creation by SERIAL.
 								 * WARNING is for unexpected messages. */
-#define ERROR		20			/* user error - abort transaction; return to
+#define PGWARNING	19			/* Must equal WARNING; see NOTE below. */
+#define WARNING_CLIENT_ONLY	20	/* Warnings to be sent to client as usual, but
+								 * never to the server log. */
+#define ERROR		21			/* user error - abort transaction; return to
 								 * known state */
-/* Save ERROR value in PGERROR so it can be restored when Win32 includes
- * modify it.  We have to use a constant rather than ERROR because macros
- * are expanded only when referenced outside macros.
- */
-#ifdef WIN32
-#define PGERROR		20
-#endif
-#define FATAL		21			/* fatal error - abort process */
-#define PANIC		22			/* take down the other backends with me */
+#define PGERROR		21			/* Must equal ERROR; see NOTE below. */
+#define FATAL		22			/* fatal error - abort process */
+#define PANIC		23			/* take down the other backends with me */
 
- /* #define DEBUG DEBUG1 */	/* Backward compatibility with pre-7.3 */
+/*
+ * NOTE: the alternate names PGWARNING and PGERROR are useful for dealing
+ * with third-party headers that make other definitions of WARNING and/or
+ * ERROR.  One can, for example, re-define ERROR as PGERROR after including
+ * such a header.
+ */
 
 
 /* macros for representing SQLSTATE strings compactly */
@@ -91,9 +93,9 @@
 /*----------
  * New-style error reporting API: to be used in this way:
  *		ereport(ERROR,
- *				(errcode(ERRCODE_UNDEFINED_CURSOR),
- *				 errmsg("portal \"%s\" not found", stmt->portalname),
- *				 ... other errxxx() fields as needed ...));
+ *				errcode(ERRCODE_UNDEFINED_CURSOR),
+ *				errmsg("portal \"%s\" not found", stmt->portalname),
+ *				... other errxxx() fields as needed ...);
  *
  * The error level is required, and so is a primary error message (errmsg
  * or errmsg_internal).  All else is optional.  errcode() defaults to
@@ -101,12 +103,24 @@
  * if elevel is WARNING, or ERRCODE_SUCCESSFUL_COMPLETION if elevel is
  * NOTICE or below.
  *
+ * Before Postgres v12, extra parentheses were required around the
+ * list of auxiliary function calls; that's now optional.
+ *
  * ereport_domain() allows a message domain to be specified, for modules that
  * wish to use a different message catalog from the backend's.  To avoid having
  * one copy of the default text domain per .o file, we define it as NULL here
  * and have errstart insert the default text domain.  Modules can either use
  * ereport_domain() directly, or preferably they can override the TEXTDOMAIN
  * macro.
+ *
+ * When __builtin_constant_p is available and elevel >= ERROR we make a call
+ * to errstart_cold() instead of errstart().  This version of the function is
+ * marked with pg_attribute_cold which will coax supporting compilers into
+ * generating code which is more optimized towards non-ERROR cases.  Because
+ * we use __builtin_constant_p() in the condition, when elevel is not a
+ * compile-time constant, or if it is, but it's < ERROR, the compiler has no
+ * need to generate any code for this branch.  It can simply call errstart()
+ * unconditionally.
  *
  * If elevel >= ERROR, the call will not return; we try to inform the compiler
  * of that via pg_unreachable().  However, no useful optimization effect is
@@ -118,34 +132,38 @@
  *----------
  */
 #ifdef HAVE__BUILTIN_CONSTANT_P
-#define ereport_domain(elevel, domain, rest)	\
+#define ereport_domain(elevel, domain, ...)	\
 	do { \
 		pg_prevent_errno_in_scope(); \
-		if (errstart(elevel, __FILE__, __LINE__, PG_FUNCNAME_MACRO, domain)) \
-			errfinish rest; \
+		if (__builtin_constant_p(elevel) && (elevel) >= ERROR ? \
+			errstart_cold(elevel, domain) : \
+			errstart(elevel, domain)) \
+			__VA_ARGS__, errfinish(__FILE__, __LINE__, PG_FUNCNAME_MACRO); \
 		if (__builtin_constant_p(elevel) && (elevel) >= ERROR) \
 			pg_unreachable(); \
 	} while(0)
 #else							/* !HAVE__BUILTIN_CONSTANT_P */
-#define ereport_domain(elevel, domain, rest)	\
+#define ereport_domain(elevel, domain, ...)	\
 	do { \
 		const int elevel_ = (elevel); \
 		pg_prevent_errno_in_scope(); \
-		if (errstart(elevel_, __FILE__, __LINE__, PG_FUNCNAME_MACRO, domain)) \
-			errfinish rest; \
+		if (errstart(elevel_, domain)) \
+			__VA_ARGS__, errfinish(__FILE__, __LINE__, PG_FUNCNAME_MACRO); \
 		if (elevel_ >= ERROR) \
 			pg_unreachable(); \
 	} while(0)
 #endif							/* HAVE__BUILTIN_CONSTANT_P */
 
-#define ereport(elevel, rest)	\
-	ereport_domain(elevel, TEXTDOMAIN, rest)
+#define ereport(elevel, ...)	\
+	ereport_domain(elevel, TEXTDOMAIN, __VA_ARGS__)
 
 #define TEXTDOMAIN NULL
 
-extern bool errstart(int elevel, const char *filename, int lineno,
-					 const char *funcname, const char *domain);
-extern void errfinish(int dummy,...);
+extern bool message_level_is_interesting(int elevel);
+
+extern bool errstart(int elevel, const char *domain);
+extern pg_attribute_cold bool errstart_cold(int elevel, const char *domain);
+extern void errfinish(const char *filename, int lineno, const char *funcname);
 
 extern int	errcode(int sqlerrcode);
 
@@ -172,6 +190,9 @@ extern int	errdetail_plural(const char *fmt_singular, const char *fmt_plural,
 
 extern int	errhint(const char *fmt,...) pg_attribute_printf(1, 2);
 
+extern int	errhint_plural(const char *fmt_singular, const char *fmt_plural,
+						   unsigned long n,...) pg_attribute_printf(1, 4) pg_attribute_printf(2, 4);
+
 /*
  * errcontext() is typically called in error context callback functions, not
  * within an ereport() invocation. The callback function can be in a different
@@ -191,7 +212,6 @@ extern int	errhidecontext(bool hide_ctx);
 
 extern int	errbacktrace(void);
 
-extern int	errfunction(const char *funcname);
 extern int	errposition(int cursorpos);
 
 extern int	internalerrposition(int cursorpos);
@@ -209,37 +229,8 @@ extern int	getinternalerrposition(void);
  *		elog(ERROR, "portal \"%s\" not found", stmt->portalname);
  *----------
  */
-/*
- * Using variadic macros, we can give the compiler a hint about the
- * call not returning when elevel >= ERROR.  See comments for ereport().
- * Note that historically elog() has called elog_start (which saves errno)
- * before evaluating "elevel", so we preserve that behavior here.
- */
-#ifdef HAVE__BUILTIN_CONSTANT_P
 #define elog(elevel, ...)  \
-	do { \
-		pg_prevent_errno_in_scope(); \
-		elog_start(__FILE__, __LINE__, PG_FUNCNAME_MACRO); \
-		elog_finish(elevel, __VA_ARGS__); \
-		if (__builtin_constant_p(elevel) && (elevel) >= ERROR) \
-			pg_unreachable(); \
-	} while(0)
-#else							/* !HAVE__BUILTIN_CONSTANT_P */
-#define elog(elevel, ...)  \
-	do { \
-		pg_prevent_errno_in_scope(); \
-		elog_start(__FILE__, __LINE__, PG_FUNCNAME_MACRO); \
-		{ \
-			const int elevel_ = (elevel); \
-			elog_finish(elevel_, __VA_ARGS__); \
-			if (elevel_ >= ERROR) \
-				pg_unreachable(); \
-		} \
-	} while(0)
-#endif							/* HAVE__BUILTIN_CONSTANT_P */
-
-extern void elog_start(const char *filename, int lineno, const char *funcname);
-extern void elog_finish(int elevel, const char *fmt,...) pg_attribute_printf(2, 3);
+	ereport(elevel, errmsg_internal(__VA_ARGS__))
 
 
 /* Support for constructing error strings separately from ereport() calls */
@@ -380,7 +371,6 @@ typedef struct ErrorData
 	int			elevel;			/* error level */
 	bool		output_to_server;	/* will report to server log? */
 	bool		output_to_client;	/* will report to client? */
-	bool		show_funcname;	/* true to force funcname inclusion */
 	bool		hide_stmt;		/* true to prevent STATEMENT: inclusion */
 	bool		hide_ctx;		/* true to prevent CONTEXT: inclusion */
 	const char *filename;		/* __FILE__ of ereport() call */

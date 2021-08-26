@@ -4,7 +4,7 @@
  *	  prototypes for functions in backend/catalog/namespace.c
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/namespace.h
@@ -30,6 +30,7 @@ typedef struct _FuncCandidateList
 	struct _FuncCandidateList *next;
 	int			pathpos;		/* for internal use of namespace lookup */
 	Oid			oid;			/* the function or operator's OID */
+	int			nominalnargs;	/* either pronargs or length(proallargtypes) */
 	int			nargs;			/* number of arg types returned */
 	int			nvargs;			/* number of args to become variadic array */
 	int			ndargs;			/* number of defaulted args */
@@ -38,13 +39,28 @@ typedef struct _FuncCandidateList
 }		   *FuncCandidateList;
 
 /*
+ * Result of checkTempNamespaceStatus
+ */
+typedef enum TempNamespaceStatus
+{
+	TEMP_NAMESPACE_NOT_TEMP,	/* nonexistent, or non-temp namespace */
+	TEMP_NAMESPACE_IDLE,		/* exists, belongs to no active session */
+	TEMP_NAMESPACE_IN_USE		/* belongs to some active session */
+} TempNamespaceStatus;
+
+/*
  *	Structure for xxxOverrideSearchPath functions
+ *
+ * The generation counter is private to namespace.c and shouldn't be touched
+ * by other code.  It can be initialized to zero if necessary (that means
+ * "not known equal to the current active path").
  */
 typedef struct OverrideSearchPath
 {
 	List	   *schemas;		/* OIDs of explicitly named schemas */
 	bool		addCatalog;		/* implicitly prepend pg_catalog? */
 	bool		addTemp;		/* implicitly prepend temp schema? */
+	uint64		generation;		/* for quick detection of equality to active */
 } OverrideSearchPath;
 
 /*
@@ -84,6 +100,7 @@ extern FuncCandidateList FuncnameGetCandidates(List *names,
 											   int nargs, List *argnames,
 											   bool expand_variadic,
 											   bool expand_defaults,
+											   bool include_out_arguments,
 											   bool missing_ok);
 extern bool FunctionIsVisible(Oid funcid);
 
@@ -138,7 +155,7 @@ extern bool isTempToastNamespace(Oid namespaceId);
 extern bool isTempOrTempToastNamespace(Oid namespaceId);
 extern bool isAnyTempNamespace(Oid namespaceId);
 extern bool isOtherTempNamespace(Oid namespaceId);
-extern bool isTempNamespaceInUse(Oid namespaceId);
+extern TempNamespaceStatus checkTempNamespaceStatus(Oid namespaceId);
 extern int	GetTempNamespaceBackendId(Oid namespaceId);
 extern Oid	GetTempToastNamespace(void);
 extern void GetTempNamespaceState(Oid *tempNamespaceId,

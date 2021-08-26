@@ -1,3 +1,6 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 # This module sets up a test server, for the SSL regression tests.
 #
 # The server is configured as follows:
@@ -9,7 +12,6 @@
 # - a database called trustdb that lets anyone in
 # - another database called certdb that uses certificate authentication, ie.
 #   the client must present a valid certificate signed by the client CA
-# - two users, called ssltestuser and anotheruser.
 #
 # The server is configured to only accept connections from localhost. If you
 # want to run the client from another host, you'll have to configure that
@@ -38,45 +40,7 @@ use Exporter 'import';
 our @EXPORT = qw(
   configure_test_server_for_ssl
   switch_server_cert
-  test_connect_fails
-  test_connect_ok
 );
-
-# Define a couple of helper functions to test connecting to the server.
-
-# The first argument is a base connection string to use for connection.
-# The second argument is a complementary connection string.
-sub test_connect_ok
-{
-	local $Test::Builder::Level = $Test::Builder::Level + 1;
-
-	my ($common_connstr, $connstr, $test_name) = @_;
-
-	my $cmd = [
-		'psql', '-X', '-A', '-t', '-c',
-		"SELECT \$\$connected with $connstr\$\$",
-		'-d', "$common_connstr $connstr"
-	];
-
-	command_ok($cmd, $test_name);
-	return;
-}
-
-sub test_connect_fails
-{
-	local $Test::Builder::Level = $Test::Builder::Level + 1;
-
-	my ($common_connstr, $connstr, $expected_stderr, $test_name) = @_;
-
-	my $cmd = [
-		'psql', '-X', '-A', '-t', '-c',
-		"SELECT \$\$connected with $connstr\$\$",
-		'-d', "$common_connstr $connstr"
-	];
-
-	command_fails_like($cmd, $expected_stderr, $test_name);
-	return;
-}
 
 # Copy a set of files, taking into account wildcards
 sub copy_files
@@ -94,9 +58,12 @@ sub copy_files
 	return;
 }
 
+# serverhost: what to put in listen_addresses, e.g. '127.0.0.1'
+# servercidr: what to put in pg_hba.conf, e.g. '127.0.0.1/32'
 sub configure_test_server_for_ssl
 {
-	my ($node, $serverhost, $authmethod, $password, $password_enc) = @_;
+	my ($node, $serverhost, $servercidr, $authmethod, $password,
+		$password_enc) = @_;
 
 	my $pgdata = $node->data_dir;
 
@@ -107,6 +74,9 @@ sub configure_test_server_for_ssl
 	$node->psql('postgres', "CREATE USER yetanotheruser");
 	$node->psql('postgres', "CREATE DATABASE trustdb");
 	$node->psql('postgres', "CREATE DATABASE certdb");
+	$node->psql('postgres', "CREATE DATABASE certdb_dn");
+	$node->psql('postgres', "CREATE DATABASE certdb_dn_re");
+	$node->psql('postgres', "CREATE DATABASE certdb_cn");
 	$node->psql('postgres', "CREATE DATABASE verifydb");
 
 	# Update password of each user as needed.
@@ -148,12 +118,14 @@ sub configure_test_server_for_ssl
 	copy_files("ssl/root+client_ca.crt", $pgdata);
 	copy_files("ssl/root_ca.crt",        $pgdata);
 	copy_files("ssl/root+client.crl",    $pgdata);
+	mkdir("$pgdata/root+client-crldir");
+	copy_files("ssl/root+client-crldir/*", "$pgdata/root+client-crldir/");
 
 	# Stop and restart server to load new listen_addresses.
 	$node->restart;
 
 	# Change pg_hba after restart because hostssl requires ssl=on
-	configure_hba_for_ssl($node, $serverhost, $authmethod);
+	configure_hba_for_ssl($node, $servercidr, $authmethod);
 
 	return;
 }
@@ -165,14 +137,24 @@ sub switch_server_cert
 	my $node     = $_[0];
 	my $certfile = $_[1];
 	my $cafile   = $_[2] || "root+client_ca";
-	my $pgdata   = $node->data_dir;
+	my $crlfile  = "root+client.crl";
+	my $crldir;
+	my $pgdata = $node->data_dir;
+
+	# defaults to use crl file
+	if (defined $_[3] || defined $_[4])
+	{
+		$crlfile = $_[3];
+		$crldir  = $_[4];
+	}
 
 	open my $sslconf, '>', "$pgdata/sslconfig.conf";
 	print $sslconf "ssl=on\n";
 	print $sslconf "ssl_ca_file='$cafile.crt'\n";
 	print $sslconf "ssl_cert_file='$certfile.crt'\n";
 	print $sslconf "ssl_key_file='$certfile.key'\n";
-	print $sslconf "ssl_crl_file='root+client.crl'\n";
+	print $sslconf "ssl_crl_file='$crlfile'\n" if defined $crlfile;
+	print $sslconf "ssl_crl_dir='$crldir'\n"   if defined $crldir;
 	close $sslconf;
 
 	$node->restart;
@@ -181,10 +163,10 @@ sub switch_server_cert
 
 sub configure_hba_for_ssl
 {
-	my ($node, $serverhost, $authmethod) = @_;
+	my ($node, $servercidr, $authmethod) = @_;
 	my $pgdata = $node->data_dir;
 
-	# Only accept SSL connections from localhost. Our tests don't depend on this
+	# Only accept SSL connections from $servercidr. Our tests don't depend on this
 	# but seems best to keep it as narrow as possible for security reasons.
 	#
 	# When connecting to certdb, also check the client certificate.
@@ -192,22 +174,31 @@ sub configure_hba_for_ssl
 	print $hba
 	  "# TYPE  DATABASE        USER            ADDRESS                 METHOD             OPTIONS\n";
 	print $hba
-	  "hostssl trustdb         md5testuser     $serverhost/32            md5\n";
+	  "hostssl trustdb         md5testuser     $servercidr            md5\n";
 	print $hba
-	  "hostssl trustdb         all             $serverhost/32            $authmethod\n";
+	  "hostssl trustdb         all             $servercidr            $authmethod\n";
 	print $hba
-	  "hostssl trustdb         all             ::1/128                 $authmethod\n";
+	  "hostssl verifydb        ssltestuser     $servercidr            $authmethod        clientcert=verify-full\n";
 	print $hba
-	  "hostssl verifydb        ssltestuser     $serverhost/32          $authmethod        clientcert=verify-full\n";
+	  "hostssl verifydb        anotheruser     $servercidr            $authmethod        clientcert=verify-full\n";
 	print $hba
-	  "hostssl verifydb        anotheruser     $serverhost/32          $authmethod        clientcert=verify-full\n";
+	  "hostssl verifydb        yetanotheruser  $servercidr            $authmethod        clientcert=verify-ca\n";
 	print $hba
-	  "hostssl verifydb        yetanotheruser  $serverhost/32          $authmethod        clientcert=verify-ca\n";
+	  "hostssl certdb          all             $servercidr            cert\n";
 	print $hba
-	  "hostssl certdb          all             $serverhost/32            cert\n";
-	print $hba
-	  "hostssl certdb          all             ::1/128                 cert\n";
+	  "hostssl certdb_dn       all             $servercidr            cert clientname=DN map=dn\n",
+	  "hostssl certdb_dn_re    all             $servercidr            cert clientname=DN map=dnre\n",
+	  "hostssl certdb_cn       all             $servercidr            cert clientname=CN map=cn\n";
 	close $hba;
+
+	# Also set the ident maps. Note: fields with commas must be quoted
+	open my $map, ">", "$pgdata/pg_ident.conf";
+	print $map
+	  "# MAPNAME       SYSTEM-USERNAME                           PG-USERNAME\n",
+	  "dn             \"CN=ssltestuser-dn,OU=Testing,OU=Engineering,O=PGDG\"    ssltestuser\n",
+	  "dnre           \"/^.*OU=Testing,.*\$\"                    ssltestuser\n",
+	  "cn              ssltestuser-dn                            ssltestuser\n";
+
 	return;
 }
 

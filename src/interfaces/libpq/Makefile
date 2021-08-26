@@ -2,7 +2,7 @@
 #
 # Makefile for src/interfaces/libpq library
 #
-# Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/interfaces/libpq/Makefile
@@ -13,6 +13,8 @@ subdir = src/interfaces/libpq
 top_builddir = ../../..
 include $(top_builddir)/src/Makefile.global
 
+
+PGFILEDESC = "PostgreSQL Access Library"
 
 # shared library parameters
 NAME= pq
@@ -28,28 +30,29 @@ endif
 # the conditional additions of files to OBJS, update Mkvcbuild.pm to match.
 
 OBJS = \
+	$(WIN32RES) \
 	fe-auth-scram.o \
 	fe-connect.o \
 	fe-exec.o \
 	fe-lobj.o \
 	fe-misc.o \
 	fe-print.o \
-	fe-protocol2.o \
 	fe-protocol3.o \
 	fe-secure.o \
+	fe-trace.o \
 	legacy-pqsignal.o \
 	libpq-events.o \
 	pqexpbuffer.o \
 	fe-auth.o
 
-# src/backend/utils/mb
+# File shared across all SSL implementations supported.
+ifneq ($(with_ssl),no)
 OBJS += \
-	encnames.o \
-	wchar.o
+	fe-secure-common.o
+endif
 
-ifeq ($(with_openssl),yes)
+ifeq ($(with_ssl),openssl)
 OBJS += \
-	fe-secure-common.o \
 	fe-secure-openssl.o
 endif
 
@@ -65,11 +68,7 @@ endif
 
 ifeq ($(PORTNAME), win32)
 OBJS += \
-	libpqrc.o \
 	win32.o
-
-libpqrc.o: libpq.rc
-	$(WINDRES) -i $< -o $@
 
 ifeq ($(enable_thread_safety), yes)
 OBJS += pthread-win32.o
@@ -91,35 +90,37 @@ endif
 ifeq ($(PORTNAME), win32)
 SHLIB_LINK += -lshell32 -lws2_32 -lsecur32 $(filter -leay32 -lssleay32 -lcomerr32 -lkrb5_32, $(LIBS))
 endif
+SHLIB_PREREQS = submake-libpgport
 
 SHLIB_EXPORTS = exports.txt
 
-all: all-lib
+PKG_CONFIG_REQUIRES_PRIVATE = libssl libcrypto
 
-all-lib: | submake-libpgport
+all: all-lib libpq-refs-stamp
 
 # Shared library stuff
 include $(top_srcdir)/src/Makefile.shlib
 backend_src = $(top_srcdir)/src/backend
 
+# Check for functions that libpq must not call, currently just exit().
+# (Ideally we'd reject abort() too, but there are various scenarios where
+# build toolchains insert abort() calls, e.g. to implement assert().)
+# If nm doesn't exist or doesn't work on shlibs, this test will do nothing,
+# which is fine.  The exclusion of __cxa_atexit is necessary on OpenBSD,
+# which seems to insert references to that even in pure C code.
+# Skip the test when profiling, as gcc may insert exit() calls for that.
+# Also skip the test on platforms where libpq infrastructure may be provided
+# by statically-linked libraries, as we can't expect them to honor this
+# coding rule.
+libpq-refs-stamp: $(shlib)
+ifneq ($(enable_coverage), yes)
+ifeq (,$(filter aix solaris,$(PORTNAME)))
+	! nm -A -u $< 2>/dev/null | grep -v __cxa_atexit | grep exit
+endif
+endif
+	touch $@
 
-# We use a few backend modules verbatim, but since we need
-# to compile with appropriate options to build a shared lib, we can't
-# use the same object files built for the backend.
-# Instead, symlink the source files in here and build our own object files.
-# When you add a file here, remember to add it in the "clean" target below.
-
-encnames.c wchar.c: % : $(backend_src)/utils/mb/%
-	rm -f $@ && $(LN_S) $< .
-
-
-libpq.rc: libpq.rc.in
-	sed -e 's/\(VERSION.*\),0 *$$/\1,'`date '+%y%j' | sed 's/^0*//'`'/' $< >$@
-
-# Depend on Makefile.global to force rebuild on re-run of configure.
-libpq.rc: $(top_builddir)/src/Makefile.global
-
-# Make dependencies on pg_config_paths.h visible, too.
+# Make dependencies on pg_config_paths.h visible in all builds.
 fe-connect.o: fe-connect.c $(top_builddir)/src/port/pg_config_paths.h
 fe-misc.o: fe-misc.c $(top_builddir)/src/port/pg_config_paths.h
 
@@ -130,6 +131,7 @@ install: all installdirs install-lib
 	$(INSTALL_DATA) $(srcdir)/libpq-fe.h '$(DESTDIR)$(includedir)'
 	$(INSTALL_DATA) $(srcdir)/libpq-events.h '$(DESTDIR)$(includedir)'
 	$(INSTALL_DATA) $(srcdir)/libpq-int.h '$(DESTDIR)$(includedir_internal)'
+	$(INSTALL_DATA) $(srcdir)/fe-auth-sasl.h '$(DESTDIR)$(includedir_internal)'
 	$(INSTALL_DATA) $(srcdir)/pqexpbuffer.h '$(DESTDIR)$(includedir_internal)'
 	$(INSTALL_DATA) $(srcdir)/pg_service.conf.sample '$(DESTDIR)$(datadir)/pg_service.conf.sample'
 
@@ -143,16 +145,15 @@ uninstall: uninstall-lib
 	rm -f '$(DESTDIR)$(includedir)/libpq-fe.h'
 	rm -f '$(DESTDIR)$(includedir)/libpq-events.h'
 	rm -f '$(DESTDIR)$(includedir_internal)/libpq-int.h'
+	rm -f '$(DESTDIR)$(includedir_internal)/fe-auth-sasl.h'
 	rm -f '$(DESTDIR)$(includedir_internal)/pqexpbuffer.h'
 	rm -f '$(DESTDIR)$(datadir)/pg_service.conf.sample'
 
 clean distclean: clean-lib
 	$(MAKE) -C test $@
-	rm -f $(OBJS) pthread.h libpq.rc
+	rm -f $(OBJS) pthread.h libpq-refs-stamp
 # Might be left over from a Win32 client-only build
 	rm -f pg_config_paths.h
-# Remove files we (may have) symlinked in from other places
-	rm -f encnames.c wchar.c
 
 maintainer-clean: distclean
 	$(MAKE) -C test $@

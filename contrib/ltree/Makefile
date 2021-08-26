@@ -12,10 +12,9 @@ OBJS = \
 	ltree_op.o \
 	ltxtquery_io.o \
 	ltxtquery_op.o
-PG_CPPFLAGS = -DLOWER_NODE
 
 EXTENSION = ltree
-DATA = ltree--1.1.sql ltree--1.0--1.1.sql ltree--unpackaged--1.0.sql
+DATA = ltree--1.1--1.2.sql ltree--1.1.sql ltree--1.0--1.1.sql
 PGFILEDESC = "ltree - hierarchical label data type"
 
 HEADERS = ltree.h

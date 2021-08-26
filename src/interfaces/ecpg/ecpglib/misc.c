@@ -11,11 +11,11 @@
 #include "ecpglib.h"
 #include "ecpglib_extern.h"
 #include "ecpgtype.h"
+#include "pg_config_paths.h"
 #include "pgtypes_date.h"
 #include "pgtypes_interval.h"
 #include "pgtypes_numeric.h"
 #include "pgtypes_timestamp.h"
-#include "pg_config_paths.h"
 #include "sqlca.h"
 
 #ifndef LONG_LONG_MIN
@@ -477,8 +477,8 @@ win32_pthread_once(volatile pthread_once_t *once, void (*fn) (void))
 		pthread_mutex_lock(&win32_pthread_once_lock);
 		if (!*once)
 		{
-			*once = true;
 			fn();
+			*once = true;
 		}
 		pthread_mutex_unlock(&win32_pthread_once_lock);
 	}

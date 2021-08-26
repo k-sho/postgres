@@ -6,7 +6,7 @@
  * There is hardly anything left of Paul Brown's original implementation...
  *
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994-5, Regents of the University of California
  *
  *
@@ -35,6 +35,7 @@
 #include "catalog/pg_am.h"
 #include "catalog/toasting.h"
 #include "commands/cluster.h"
+#include "commands/defrem.h"
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
 #include "commands/vacuum.h"
@@ -99,8 +100,29 @@ static List *get_tables_to_cluster(MemoryContext cluster_context);
  *---------------------------------------------------------------------------
  */
 void
-cluster(ClusterStmt *stmt, bool isTopLevel)
+cluster(ParseState *pstate, ClusterStmt *stmt, bool isTopLevel)
 {
+	ListCell   *lc;
+	ClusterParams params = {0};
+	bool		verbose = false;
+
+	/* Parse option list */
+	foreach(lc, stmt->params)
+	{
+		DefElem    *opt = (DefElem *) lfirst(lc);
+
+		if (strcmp(opt->defname, "verbose") == 0)
+			verbose = defGetBoolean(opt);
+		else
+			ereport(ERROR,
+					(errcode(ERRCODE_SYNTAX_ERROR),
+					 errmsg("unrecognized CLUSTER option \"%s\"",
+							opt->defname),
+					 parser_errposition(pstate, opt->location)));
+	}
+
+	params.options = (verbose ? CLUOPT_VERBOSE : 0);
+
 	if (stmt->relation != NULL)
 	{
 		/* This is the single-relation case. */
@@ -139,21 +161,9 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 			/* We need to find the index that has indisclustered set. */
 			foreach(index, RelationGetIndexList(rel))
 			{
-				HeapTuple	idxtuple;
-				Form_pg_index indexForm;
-
 				indexOid = lfirst_oid(index);
-				idxtuple = SearchSysCache1(INDEXRELID,
-										   ObjectIdGetDatum(indexOid));
-				if (!HeapTupleIsValid(idxtuple))
-					elog(ERROR, "cache lookup failed for index %u", indexOid);
-				indexForm = (Form_pg_index) GETSTRUCT(idxtuple);
-				if (indexForm->indisclustered)
-				{
-					ReleaseSysCache(idxtuple);
+				if (get_index_isclustered(indexOid))
 					break;
-				}
-				ReleaseSysCache(idxtuple);
 				indexOid = InvalidOid;
 			}
 
@@ -182,7 +192,7 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 		table_close(rel, NoLock);
 
 		/* Do the job. */
-		cluster_rel(tableOid, indexOid, stmt->options);
+		cluster_rel(tableOid, indexOid, &params);
 	}
 	else
 	{
@@ -224,14 +234,16 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
 		foreach(rv, rvs)
 		{
 			RelToCluster *rvtc = (RelToCluster *) lfirst(rv);
+			ClusterParams cluster_params = params;
 
 			/* Start a new transaction for each relation. */
 			StartTransactionCommand();
 			/* functions in indexes may want a snapshot set */
 			PushActiveSnapshot(GetTransactionSnapshot());
 			/* Do the job. */
+			cluster_params.options |= CLUOPT_RECHECK;
 			cluster_rel(rvtc->tableOid, rvtc->indexOid,
-						stmt->options | CLUOPT_RECHECK);
+						&cluster_params);
 			PopActiveSnapshot();
 			CommitTransactionCommand();
 		}
@@ -262,11 +274,11 @@ cluster(ClusterStmt *stmt, bool isTopLevel)
  * and error messages should refer to the operation as VACUUM not CLUSTER.
  */
 void
-cluster_rel(Oid tableOid, Oid indexOid, int options)
+cluster_rel(Oid tableOid, Oid indexOid, ClusterParams *params)
 {
 	Relation	OldHeap;
-	bool		verbose = ((options & CLUOPT_VERBOSE) != 0);
-	bool		recheck = ((options & CLUOPT_RECHECK) != 0);
+	bool		verbose = ((params->options & CLUOPT_VERBOSE) != 0);
+	bool		recheck = ((params->options & CLUOPT_RECHECK) != 0);
 
 	/* Check for user-requested abort. */
 	CHECK_FOR_INTERRUPTS();
@@ -304,9 +316,6 @@ cluster_rel(Oid tableOid, Oid indexOid, int options)
 	 */
 	if (recheck)
 	{
-		HeapTuple	tuple;
-		Form_pg_index indexForm;
-
 		/* Check that the user still owns the relation */
 		if (!pg_class_ownercheck(tableOid, GetUserId()))
 		{
@@ -345,22 +354,12 @@ cluster_rel(Oid tableOid, Oid indexOid, int options)
 			/*
 			 * Check that the index is still the one with indisclustered set.
 			 */
-			tuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexOid));
-			if (!HeapTupleIsValid(tuple))	/* probably can't happen */
+			if (!get_index_isclustered(indexOid))
 			{
 				relation_close(OldHeap, AccessExclusiveLock);
 				pgstat_progress_end_command();
 				return;
 			}
-			indexForm = (Form_pg_index) GETSTRUCT(tuple);
-			if (!indexForm->indisclustered)
-			{
-				ReleaseSysCache(tuple);
-				relation_close(OldHeap, AccessExclusiveLock);
-				pgstat_progress_end_command();
-				return;
-			}
-			ReleaseSysCache(tuple);
 		}
 	}
 
@@ -519,18 +518,8 @@ mark_index_clustered(Relation rel, Oid indexOid, bool is_internal)
 	 */
 	if (OidIsValid(indexOid))
 	{
-		indexTuple = SearchSysCache1(INDEXRELID, ObjectIdGetDatum(indexOid));
-		if (!HeapTupleIsValid(indexTuple))
-			elog(ERROR, "cache lookup failed for index %u", indexOid);
-		indexForm = (Form_pg_index) GETSTRUCT(indexTuple);
-
-		if (indexForm->indisclustered)
-		{
-			ReleaseSysCache(indexTuple);
+		if (get_index_isclustered(indexOid))
 			return;
-		}
-
-		ReleaseSysCache(indexTuple);
 	}
 
 	/*
@@ -587,6 +576,7 @@ static void
 rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
 {
 	Oid			tableOid = RelationGetRelid(OldHeap);
+	Oid			accessMethod = OldHeap->rd_rel->relam;
 	Oid			tableSpace = OldHeap->rd_rel->reltablespace;
 	Oid			OIDNewHeap;
 	char		relpersistence;
@@ -608,6 +598,7 @@ rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
 
 	/* Create the transient table that will receive the re-ordered data */
 	OIDNewHeap = make_new_heap(tableOid, tableSpace,
+							   accessMethod,
 							   relpersistence,
 							   AccessExclusiveLock);
 
@@ -629,16 +620,16 @@ rebuild_relation(Relation OldHeap, Oid indexOid, bool verbose)
 /*
  * Create the transient table that will be filled with new data during
  * CLUSTER, ALTER TABLE, and similar operations.  The transient table
- * duplicates the logical structure of the OldHeap, but is placed in
- * NewTableSpace which might be different from OldHeap's.  Also, it's built
- * with the specified persistence, which might differ from the original's.
+ * duplicates the logical structure of the OldHeap; but will have the
+ * specified physical storage properties NewTableSpace, NewAccessMethod, and
+ * relpersistence.
  *
  * After this, the caller should load the new heap with transferred/modified
  * data, then call finish_heap_swap to complete the operation.
  */
 Oid
-make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
-			  LOCKMODE lockmode)
+make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, Oid NewAccessMethod,
+			  char relpersistence, LOCKMODE lockmode)
 {
 	TupleDesc	OldHeapDesc;
 	char		NewHeapName[NAMEDATALEN];
@@ -697,7 +688,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 										  InvalidOid,
 										  InvalidOid,
 										  OldHeap->rd_rel->relowner,
-										  OldHeap->rd_rel->relam,
+										  NewAccessMethod,
 										  OldHeapDesc,
 										  NIL,
 										  RELKIND_RELATION,
@@ -744,7 +735,7 @@ make_new_heap(Oid OIDOldHeap, Oid NewTableSpace, char relpersistence,
 		if (isNull)
 			reloptions = (Datum) 0;
 
-		NewHeapCreateToastTable(OIDNewHeap, reloptions, lockmode);
+		NewHeapCreateToastTable(OIDNewHeap, reloptions, lockmode, toastid);
 
 		ReleaseSysCache(tuple);
 	}
@@ -785,6 +776,7 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	BlockNumber num_pages;
 	int			elevel = verbose ? INFO : DEBUG2;
 	PGRUsage	ru0;
+	char	   *nspname;
 
 	pg_rusage_init(&ru0);
 
@@ -797,6 +789,9 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 		OldIndex = index_open(OIDOldIndex, AccessExclusiveLock);
 	else
 		OldIndex = NULL;
+
+	/* Store a copy of the namespace name for logging purposes */
+	nspname = get_namespace_name(RelationGetNamespace(OldHeap));
 
 	/*
 	 * Their tuple descriptors should be exactly alike, but here we only need
@@ -896,18 +891,18 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 	if (OldIndex != NULL && !use_sort)
 		ereport(elevel,
 				(errmsg("clustering \"%s.%s\" using index scan on \"%s\"",
-						get_namespace_name(RelationGetNamespace(OldHeap)),
+						nspname,
 						RelationGetRelationName(OldHeap),
 						RelationGetRelationName(OldIndex))));
 	else if (use_sort)
 		ereport(elevel,
 				(errmsg("clustering \"%s.%s\" using sequential scan and sort",
-						get_namespace_name(RelationGetNamespace(OldHeap)),
+						nspname,
 						RelationGetRelationName(OldHeap))));
 	else
 		ereport(elevel,
 				(errmsg("vacuuming \"%s.%s\"",
-						get_namespace_name(RelationGetNamespace(OldHeap)),
+						nspname,
 						RelationGetRelationName(OldHeap))));
 
 	/*
@@ -932,7 +927,8 @@ copy_table_data(Oid OIDNewHeap, Oid OIDOldHeap, Oid OIDOldIndex, bool verbose,
 
 	/* Log what we did */
 	ereport(elevel,
-			(errmsg("\"%s\": found %.0f removable, %.0f nonremovable row versions in %u pages",
+			(errmsg("\"%s.%s\": found %.0f removable, %.0f nonremovable row versions in %u pages",
+					nspname,
 					RelationGetRelationName(OldHeap),
 					tups_vacuumed, num_tuples,
 					RelationGetNumberOfBlocks(OldHeap)),
@@ -1047,6 +1043,10 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 		relform1->reltablespace = relform2->reltablespace;
 		relform2->reltablespace = swaptemp;
 
+		swaptemp = relform1->relam;
+		relform1->relam = relform2->relam;
+		relform2->relam = swaptemp;
+
 		swptmpchr = relform1->relpersistence;
 		relform1->relpersistence = relform2->relpersistence;
 		relform2->relpersistence = swptmpchr;
@@ -1082,6 +1082,9 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 		if (relform1->relpersistence != relform2->relpersistence)
 			elog(ERROR, "cannot change persistence of mapped relation \"%s\"",
 				 NameStr(relform1->relname));
+		if (relform1->relam != relform2->relam)
+			elog(ERROR, "cannot change access method of mapped relation \"%s\"",
+				 NameStr(relform1->relname));
 		if (!swap_toast_by_content &&
 			(relform1->reltoastrelid || relform2->reltoastrelid))
 			elog(ERROR, "cannot swap toast by links for mapped relation \"%s\"",
@@ -1108,6 +1111,25 @@ swap_relation_files(Oid r1, Oid r2, bool target_is_pg_class,
 
 		/* Pass OIDs of mapped r2 tables back to caller */
 		*mapped_tables++ = r2;
+	}
+
+	/*
+	 * Recognize that rel1's relfilenode (swapped from rel2) is new in this
+	 * subtransaction. The rel2 storage (swapped from rel1) may or may not be
+	 * new.
+	 */
+	{
+		Relation	rel1,
+					rel2;
+
+		rel1 = relation_open(r1, NoLock);
+		rel2 = relation_open(r2, NoLock);
+		rel2->rd_createSubid = rel1->rd_createSubid;
+		rel2->rd_newRelfilenodeSubid = rel1->rd_newRelfilenodeSubid;
+		rel2->rd_firstRelfilenodeSubid = rel1->rd_firstRelfilenodeSubid;
+		RelationAssumeNewRelfilenode(rel1);
+		relation_close(rel1, NoLock);
+		relation_close(rel2, NoLock);
 	}
 
 	/*
@@ -1349,6 +1371,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	ObjectAddress object;
 	Oid			mapped_tables[4];
 	int			reindex_flags;
+	ReindexParams reindex_params = {0};
 	int			i;
 
 	/* Report that we are now swapping relation files */
@@ -1406,14 +1429,14 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 	pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
 								 PROGRESS_CLUSTER_PHASE_REBUILD_INDEX);
 
-	reindex_relation(OIDOldHeap, reindex_flags, 0);
+	reindex_relation(OIDOldHeap, reindex_flags, &reindex_params);
 
 	/* Report that we are now doing clean up */
 	pgstat_progress_update_param(PROGRESS_CLUSTER_PHASE,
 								 PROGRESS_CLUSTER_PHASE_FINAL_CLEANUP);
 
 	/*
-	 * If the relation being rebuild is pg_class, swap_relation_files()
+	 * If the relation being rebuilt is pg_class, swap_relation_files()
 	 * couldn't update pg_class's own pg_class entry (check comments in
 	 * swap_relation_files()), thus relfrozenxid was not updated. That's
 	 * annoying because a potential reason for doing a VACUUM FULL is a
@@ -1489,7 +1512,7 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 
 			/* Get the associated valid index to be renamed */
 			toastidx = toast_get_valid_index(newrel->rd_rel->reltoastrelid,
-											 AccessShareLock);
+											 NoLock);
 
 			/* rename the toast table ... */
 			snprintf(NewToastName, NAMEDATALEN, "pg_toast_%u",
@@ -1503,6 +1526,14 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 
 			RenameRelationInternal(toastidx,
 								   NewToastName, true, true);
+
+			/*
+			 * Reset the relrewrite for the toast. The command-counter
+			 * increment is required here as we are about to update
+			 * the tuple that is updated as part of RenameRelationInternal.
+			 */
+			CommandCounterIncrement();
+			ResetRelRewrite(newrel->rd_rel->reltoastrelid);
 		}
 		relation_close(newrel, NoLock);
 	}
@@ -1522,8 +1553,8 @@ finish_heap_swap(Oid OIDOldHeap, Oid OIDNewHeap,
 /*
  * Get a list of tables that the current user owns and
  * have indisclustered set.  Return the list in a List * of RelToCluster
- * with the tableOid and the indexOid on which the table is already
- * clustered.
+ * (stored in the specified memory context), each one giving the tableOid
+ * and the indexOid on which the table is already clustered.
  */
 static List *
 get_tables_to_cluster(MemoryContext cluster_context)
@@ -1539,9 +1570,7 @@ get_tables_to_cluster(MemoryContext cluster_context)
 
 	/*
 	 * Get all indexes that have indisclustered set and are owned by
-	 * appropriate user. System relations or nailed-in relations cannot ever
-	 * have indisclustered set, because CLUSTER will refuse to set it when
-	 * called with one of them as argument.
+	 * appropriate user.
 	 */
 	indRelation = table_open(IndexRelationId, AccessShareLock);
 	ScanKeyInit(&entry,

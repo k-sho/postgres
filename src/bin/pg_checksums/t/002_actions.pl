@@ -1,3 +1,6 @@
+
+# Copyright (c) 2021, PostgreSQL Global Development Group
+
 # Do basic sanity checks supported by pg_checksums using
 # an initialized cluster.
 
@@ -5,7 +8,9 @@ use strict;
 use warnings;
 use PostgresNode;
 use TestLib;
-use Test::More tests => 62;
+
+use Fcntl qw(:seek);
+use Test::More tests => 63;
 
 
 # Utility routine to create and check a table with corrupted checksums
@@ -21,7 +26,7 @@ sub check_relation_corruption
 
 	$node->safe_psql(
 		'postgres',
-		"SELECT a INTO $table FROM generate_series(1,10000) AS a;
+		"CREATE TABLE $table AS SELECT a FROM generate_series(1,10000) AS a;
 		ALTER TABLE $table SET (autovacuum_enabled=false);");
 
 	$node->safe_psql('postgres',
@@ -50,7 +55,7 @@ sub check_relation_corruption
 
 	# Time to create some corruption
 	open my $file, '+<', "$pgdata/$file_corrupted";
-	seek($file, $pageheader_size, 0);
+	seek($file, $pageheader_size, SEEK_SET);
 	syswrite($file, "\0\0\0\0\0\0\0\0\0");
 	close $file;
 
@@ -87,7 +92,7 @@ sub check_relation_corruption
 }
 
 # Initialize node with checksums disabled.
-my $node = get_new_node('node_checksum');
+my $node = PostgresNode->new('node_checksum');
 $node->init();
 my $pgdata = $node->data_dir;
 
@@ -111,7 +116,9 @@ append_to_file "$pgdata/global/99999_vm.123",   "";
 # should be ignored by the scan.
 append_to_file "$pgdata/global/pgsql_tmp_123", "foo";
 mkdir "$pgdata/global/pgsql_tmp";
-append_to_file "$pgdata/global/pgsql_tmp/1.1", "foo";
+append_to_file "$pgdata/global/pgsql_tmp/1.1",        "foo";
+append_to_file "$pgdata/global/pg_internal.init",     "foo";
+append_to_file "$pgdata/global/pg_internal.init.123", "foo";
 
 # Enable checksums.
 command_ok([ 'pg_checksums', '--enable', '--no-sync', '-D', $pgdata ],
@@ -214,6 +221,13 @@ sub fail_corrupt
 
 # Stop instance for the follow-up checks.
 $node->stop;
+
+# Create a fake tablespace location that should not be scanned
+# when verifying checksums.
+mkdir "$tablespace_dir/PG_99_999999991/";
+append_to_file "$tablespace_dir/PG_99_999999991/foo", "123";
+command_ok([ 'pg_checksums', '--check', '-D', $pgdata ],
+	"succeeds with foreign tablespace");
 
 # Authorized relation files filled with corrupted data cause the
 # checksum checks to fail.  Make sure to use file names different

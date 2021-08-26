@@ -20,7 +20,7 @@
  * Future versions may support iterators and incremental resizing; for now
  * the implementation is minimalist.
  *
- * Portions Copyright (c) 1996-2019, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2021, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -31,11 +31,11 @@
 
 #include "postgres.h"
 
+#include "common/hashfn.h"
 #include "lib/dshash.h"
 #include "storage/ipc.h"
 #include "storage/lwlock.h"
 #include "utils/dsa.h"
-#include "utils/hsearch.h"
 #include "utils/memutils.h"
 
 /*
@@ -375,7 +375,7 @@ dshash_get_hash_table_handle(dshash_table *hash_table)
  * the caller must take care to ensure that the entry is not left corrupted.
  * The lock mode is either shared or exclusive depending on 'exclusive'.
  *
- * The caller must not lock a lock already.
+ * The caller must not hold a lock already.
  *
  * Note that the lock held is in fact an LWLock, so interrupts will be held on
  * return from this function, and not resumed until dshash_release_lock is

@@ -4,12 +4,12 @@
 #ifndef __BTREE_UTILS_NUM_H__
 #define __BTREE_UTILS_NUM_H__
 
-#include "btree_gist.h"
-#include "access/gist.h"
-#include "utils/rel.h"
-
 #include <math.h>
 #include <float.h>
+
+#include "access/gist.h"
+#include "btree_gist.h"
+#include "utils/rel.h"
 
 typedef char GBT_NUMKEY;
 
@@ -74,7 +74,7 @@ typedef struct
 	(*(result)) += (float) ( ((double)(tmp)) / ( (double)(tmp) + ( ((double)(oupper))*0.49F - ((double)(olower))*0.49F ) ) ); \
 	(*(result)) *= (FLT_MAX / (((GISTENTRY *) PG_GETARG_POINTER(0))->rel->rd_att->natts + 1)); \
   } \
-} while (0);
+} while (0)
 
 
 /*
@@ -88,23 +88,6 @@ typedef struct
 	 (ivp)->month * (30.0 * SECS_PER_DAY))
 
 #define GET_FLOAT_DISTANCE(t, arg1, arg2)	Abs( ((float8) *((const t *) (arg1))) - ((float8) *((const t *) (arg2))) )
-
-/*
- * check to see if a float4/8 val has underflowed or overflowed
- * borrowed from src/backend/utils/adt/float.c
- */
-#define CHECKFLOATVAL(val, inf_is_valid, zero_is_valid)			\
-do {															\
-	if (isinf(val) && !(inf_is_valid))							\
-		ereport(ERROR,											\
-				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),	\
-		  errmsg("value out of range: overflow")));				\
-																\
-	if ((val) == 0.0 && !(zero_is_valid))						\
-		ereport(ERROR,											\
-				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),	\
-		 errmsg("value out of range: underflow")));				\
-} while(0)
 
 
 extern Interval *abs_interval(Interval *a);
