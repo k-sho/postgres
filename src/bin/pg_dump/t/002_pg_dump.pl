@@ -10,7 +10,6 @@ use TestLib;
 use Test::More;
 
 my $tempdir       = TestLib::tempdir;
-my $tempdir_short = TestLib::tempdir_short;
 
 ###############################################################
 # Definition of the pg_dump runs to make.
@@ -444,6 +443,25 @@ my %tests = (
 		},
 	},
 
+	'ALTER DEFAULT PRIVILEGES FOR ROLE regress_dump_test_role GRANT EXECUTE ON FUNCTIONS'
+	  => {
+		create_order => 15,
+		create_sql   => 'ALTER DEFAULT PRIVILEGES
+					   FOR ROLE regress_dump_test_role IN SCHEMA dump_test
+					   GRANT EXECUTE ON FUNCTIONS TO regress_dump_test_role;',
+		regexp => qr/^
+			\QALTER DEFAULT PRIVILEGES \E
+			\QFOR ROLE regress_dump_test_role IN SCHEMA dump_test \E
+			\QGRANT ALL ON FUNCTIONS  TO regress_dump_test_role;\E
+			/xm,
+		like =>
+		  { %full_runs, %dump_test_schema_runs, section_post_data => 1, },
+		unlike => {
+			exclude_dump_test_schema => 1,
+			no_privs                 => 1,
+		},
+	  },
+
 	'ALTER DEFAULT PRIVILEGES FOR ROLE regress_dump_test_role REVOKE' => {
 		create_order => 55,
 		create_sql   => 'ALTER DEFAULT PRIVILEGES
@@ -629,7 +647,9 @@ my %tests = (
 	},
 
 	'ALTER SCHEMA public OWNER TO' => {
-		# see test "REVOKE CREATE ON SCHEMA public" for causative create_sql
+		create_order => 15,
+		create_sql =>
+		  'ALTER SCHEMA public OWNER TO "regress_quoted  \"" role";',
 		regexp => qr/^ALTER SCHEMA public OWNER TO .+;/m,
 		like   => {
 			%full_runs, section_pre_data => 1,
@@ -2811,7 +2831,7 @@ my %tests = (
 		create_sql   => 'CREATE STATISTICS dump_test.test_ext_stats_expr
 							ON (2 * col1) FROM dump_test.test_fifth_table',
 		regexp => qr/^
-			\QCREATE STATISTICS dump_test.test_ext_stats_expr ON ((2 * col1)) FROM dump_test.test_fifth_table;\E
+			\QCREATE STATISTICS dump_test.test_ext_stats_expr ON (2 * col1) FROM dump_test.test_fifth_table;\E
 		    /xms,
 		like =>
 		  { %full_runs, %dump_test_schema_runs, section_post_data => 1, },
@@ -3473,17 +3493,12 @@ my %tests = (
 		unlike => { no_privs => 1, },
 	},
 
-	'REVOKE CREATE ON SCHEMA public FROM public' => {
+	'REVOKE ALL ON SCHEMA public' => {
 		create_order => 16,
-		create_sql   => '
-			REVOKE CREATE ON SCHEMA public FROM public;
-			ALTER SCHEMA public OWNER TO "regress_quoted  \"" role";
-			REVOKE ALL ON SCHEMA public FROM "regress_quoted  \"" role";',
-		regexp => qr/^
-			\QREVOKE ALL ON SCHEMA public FROM "regress_quoted  \E\\""\ role";
-			\n\QREVOKE ALL ON SCHEMA public FROM PUBLIC;\E
-			\n\QGRANT USAGE ON SCHEMA public TO PUBLIC;\E
-			/xm,
+		create_sql =>
+		  'REVOKE ALL ON SCHEMA public FROM "regress_quoted  \"" role";',
+		regexp =>
+		  qr/^REVOKE ALL ON SCHEMA public FROM "regress_quoted  \\"" role";/m,
 		like => { %full_runs, section_pre_data => 1, },
 		unlike => { no_privs => 1, },
 	},

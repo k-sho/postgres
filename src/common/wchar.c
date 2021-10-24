@@ -583,20 +583,19 @@ pg_utf_mblen(const unsigned char *s)
 
 struct mbinterval
 {
-	unsigned short first;
-	unsigned short last;
-	signed int	width;
+	unsigned int first;
+	unsigned int last;
 };
 
 /* auxiliary function for binary search in interval table */
-static const struct mbinterval *
+static int
 mbbisearch(pg_wchar ucs, const struct mbinterval *table, int max)
 {
 	int			min = 0;
 	int			mid;
 
 	if (ucs < table[0].first || ucs > table[max].last)
-		return NULL;
+		return 0;
 	while (max >= min)
 	{
 		mid = (min + max) / 2;
@@ -605,10 +604,10 @@ mbbisearch(pg_wchar ucs, const struct mbinterval *table, int max)
 		else if (ucs < table[mid].first)
 			max = mid - 1;
 		else
-			return &table[mid];
+			return 1;
 	}
 
-	return NULL;
+	return 0;
 }
 
 
@@ -623,12 +622,6 @@ mbbisearch(pg_wchar ucs, const struct mbinterval *table, int max)
  *	  - Non-spacing and enclosing combining characters (general
  *		category code Mn or Me in the Unicode database) have a
  *		column width of 0.
- *
- *	  - Other format characters (general category code Cf in the Unicode
- *		database) and ZERO WIDTH SPACE (U+200B) have a column width of 0.
- *
- *	  - Hangul Jamo medial vowels and final consonants (U+1160-U+11FF)
- *		have a column width of 0.
  *
  *	  - Spacing characters in the East Asian Wide (W) or East Asian
  *		FullWidth (F) category as defined in Unicode Technical
@@ -645,9 +638,8 @@ mbbisearch(pg_wchar ucs, const struct mbinterval *table, int max)
 static int
 ucs_wcwidth(pg_wchar ucs)
 {
-#include "common/unicode_width_table.h"
-
-	const struct mbinterval *range;
+#include "common/unicode_combining_table.h"
+#include "common/unicode_east_asian_fw_table.h"
 
 	/* test for 8-bit control characters */
 	if (ucs == 0)
@@ -656,29 +648,25 @@ ucs_wcwidth(pg_wchar ucs)
 	if (ucs < 0x20 || (ucs >= 0x7f && ucs < 0xa0) || ucs > 0x0010ffff)
 		return -1;
 
-	/* binary search in table of character widths */
-	range = mbbisearch(ucs, wcwidth,
-					   sizeof(wcwidth) / sizeof(struct mbinterval) - 1);
-
-	if (range != NULL)
-		return range->width;
-
 	/*
-	 * if we arrive here, ucs is not a combining or C0/C1 control character
+	 * binary search in table of non-spacing characters
+	 *
+	 * XXX: In the official Unicode sources, it is possible for a character to
+	 * be described as both non-spacing and wide at the same time. As of
+	 * Unicode 13.0, treating the non-spacing property as the determining
+	 * factor for display width leads to the correct behavior, so do that
+	 * search first.
 	 */
+	if (mbbisearch(ucs, combining,
+				   sizeof(combining) / sizeof(struct mbinterval) - 1))
+		return 0;
 
-	return 1 +
-		(ucs >= 0x1100 &&
-		 (ucs <= 0x115f ||		/* Hangul Jamo init. consonants */
-		  (ucs >= 0x2e80 && ucs <= 0xa4cf && (ucs & ~0x0011) != 0x300a &&
-		   ucs != 0x303f) ||	/* CJK ... Yi */
-		  (ucs >= 0xac00 && ucs <= 0xd7a3) ||	/* Hangul Syllables */
-		  (ucs >= 0xf900 && ucs <= 0xfaff) ||	/* CJK Compatibility
-												 * Ideographs */
-		  (ucs >= 0xfe30 && ucs <= 0xfe6f) ||	/* CJK Compatibility Forms */
-		  (ucs >= 0xff00 && ucs <= 0xff5f) ||	/* Fullwidth Forms */
-		  (ucs >= 0xffe0 && ucs <= 0xffe6) ||
-		  (ucs >= 0x20000 && ucs <= 0x2ffff)));
+	/* binary search in table of wide characters */
+	if (mbbisearch(ucs, east_asian_fw,
+				   sizeof(east_asian_fw) / sizeof(struct mbinterval) - 1))
+		return 2;
+
+	return 1;
 }
 
 /*

@@ -166,9 +166,11 @@ typedef struct _typeInfo
 	DumpableObject dobj;
 
 	/*
-	 * Note: dobj.name is the pg_type.typname entry.  format_type() might
-	 * produce something different than typname
+	 * Note: dobj.name is the raw pg_type.typname entry.  ftypname is the
+	 * result of format_type(), which will be quoted if needed, and might be
+	 * schema-qualified too.
 	 */
+	char	   *ftypname;
 	char	   *rolname;		/* name of owner, or empty string */
 	char	   *typacl;
 	char	   *rtypacl;
@@ -646,16 +648,6 @@ typedef struct _SubscriptionInfo
 } SubscriptionInfo;
 
 /*
- * We build an array of these with an entry for each object that is an
- * extension member according to pg_depend.
- */
-typedef struct _extensionMemberId
-{
-	CatalogId	catId;			/* tableoid+oid of some member object */
-	ExtensionInfo *ext;			/* owning extension */
-} ExtensionMemberId;
-
-/*
  *	common utility functions
  */
 
@@ -680,7 +672,7 @@ extern NamespaceInfo *findNamespaceByOid(Oid oid);
 extern ExtensionInfo *findExtensionByOid(Oid oid);
 extern PublicationInfo *findPublicationByOid(Oid oid);
 
-extern void setExtensionMembership(ExtensionMemberId *extmems, int nextmems);
+extern void recordExtensionMembership(CatalogId catId, ExtensionInfo *ext);
 extern ExtensionInfo *findOwningExtension(CatalogId catalogId);
 
 extern void parseOidArray(const char *str, Oid *array, int arraysize);
